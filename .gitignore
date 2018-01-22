@@ -57,3 +57,6 @@ typings/
 # dotenv environment variables file
 .env
 
+/config.js
+/apiclient_cert.p12
+/config.js
