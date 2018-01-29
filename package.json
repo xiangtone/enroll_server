@@ -9,6 +9,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "axios": "^0.17.1",
     "body-parser": "^1.17.2",
     "connect-mongo": "^2.0.1",
     "cos-nodejs-sdk-v5": "^2.1.0",

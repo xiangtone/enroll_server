@@ -4,6 +4,9 @@ const session = require('express-session');
 const MongoStore = require('connect-mongo')(session);
 var mysql = require('mysql');
 var mongodb = require('mongodb');
+var ObjectId = require('mongodb').ObjectID
+var https = require('https');
+var axios = require('axios');
 var path = require('path');
 var bodyParser = require('body-parser');
 var jsonParser = bodyParser.json();
@@ -98,7 +101,6 @@ app.use(function(req, res, next) {
   };
 
   function oAuthBaseProcess(code) {
-    var https = require('https');
     var url = 'https://api.weixin.qq.com/sns/oauth2/access_token?appid=' + CONFIG.WECHAT.APPID + '&secret=' + CONFIG.WECHAT.SECRET + '&code=' + code + '&grant_type=authorization_code'
     https.get(url, function(response) {
       var body = '';
@@ -166,7 +168,6 @@ app.use(function(req, res, next) {
   }
 
   function getUserInfoWithOpenId(openId) {
-    var https = require('https');
     var url = 'https://api.weixin.qq.com/cgi-bin/user/info?access_token=' + globalInfo.token.value + '&openid=' + openId + '&lang=zh_CN'
     https.get(url, function(response) {
       var body = '';
@@ -188,7 +189,6 @@ app.use(function(req, res, next) {
   }
 
   function oAuthUserInfo(code) {
-    var https = require('https');
     var url = 'https://api.weixin.qq.com/sns/userinfo?access_token=' + req.session.wechatBase.access_token + '&openid=' + req.session.wechatBase.openid + '&lang=zh_CN'
     https.get(url, function(response) {
       var body = '';
@@ -228,9 +228,9 @@ app.use(function(req, res, next) {
     var timestamp = +new Date();
     if (target.indexOf('f=') == -1) {
       if (target.indexOf('?') == -1) {
-        target += '?f=' + req.session.wechatBase.openid
+        target += '?f=' + req.session.fetchWechatUserInfo.unionid
       } else {
-        target += '&f=' + req.session.wechatBase.openid
+        target += '&f=' + req.session.fetchWechatUserInfo.unionid
       }
     }
     return res.send('<script>location="' + target + '"</script>')
@@ -267,17 +267,13 @@ function createActivity(req, res) {
       numberMin: req.body.numberMin,
       confirmDayCount: req.body.confirmDayCount,
       enrollPrice: req.body.enrollPrice,
+      activityConfirmSwitch: req.body.activityConfirmSwitch,
       founderUnionId: req.session.fetchWechatUserInfo.unionid,
       lastModifyTime: new Date(),
-      applys: [{
-        unionId: req.session.fetchWechatUserInfo.unionid,
+      applys: [initialApply({
         status: 'pass',
-        applyTime: new Date(),
-        confirmTime: new Date(),
         displayNickName: req.body.founderNickName,
-        wechatNickName: req.session.fetchWechatUserInfo.nickname,
-        headimgurl: req.session.fetchWechatUserInfo.headimgurl,
-      }]
+      }, req)]
     }]
   }
   mo.insertDocuments(insertData, function(result) {
@@ -305,9 +301,132 @@ function getActivity(req, res) {
   });
 }
 
+function enrollActivity(req, res) {
+  mo.findOneDocumentById('activitys', req.body.activityId, function(result) {
+    var rsp = { status: 'ok' }
+    if (checkEnroll(req.session.fetchWechatUserInfo.unionid, result.applys)) {
+      rsp = {
+        status: 'error',
+        msg: 'enrolled',
+      }
+      res.send(rsp);
+    } else {
+      result.applys.push(initialApply({
+        status: result.activityConfirmSwitch ? 'wait' : 'pass',
+        displayNickName: req.body.displayNickName,
+      }, req))
+      logger.debug('enrollActivity', result)
+      mo.updateOne('activitys', { _id: new ObjectId(req.body.activityId) }, {
+        $set: { applys: result.applys }
+      }, function(result) {
+        res.send(rsp);
+      })
+    }
+  });
+}
+
+function enrollQrcode(req, res) {
+  mo.findOneDocumentByFilter('qrcodes', {
+    'act': 'enroll',
+    'activityId': req.body.activityId,
+    'from': req.body.from,
+  }, { sort: { '_id': -1 } }, function(result) {
+    if (result) {
+      var rsp = {
+        status: 'ok',
+        ticket: result.ticket,
+        url: result.url
+      }
+      res.send(rsp);
+    } else {
+      const insertData = {
+        collection: 'qrcodes',
+        documents: [{
+          'act': 'enroll',
+          'activityId': req.body.activityId,
+          'from': req.body.from,
+          expiredTime: new Date(Date.now() + 86400 * 1000 * 29)
+        }]
+      }
+      mo.insertDocuments(insertData, function(inserted) {
+        if (inserted.result.ok == 1) {
+          axios.post('https://api.weixin.qq.com/cgi-bin/qrcode/create?access_token=' + globalInfo.token.value, {
+              "expire_seconds": 2592000,
+              "action_name": "QR_SCENE",
+              "action_info": {
+                "scene": { "scene_id": inserted.ops[0]._id }
+              }
+            })
+            .then(function(response) {
+              if (response.data.ticket) {
+                mo.updateOne('qrcodes', { _id: new ObjectId(inserted.ops[0]._id) }, {
+                  $set: {
+                    ticket: response.data.ticket,
+                    url: response.data.url
+                  }
+                }, function(result) {
+                  if (result.result.ok == 1) {
+                    var rsp = {
+                      status: 'ok',
+                      ticket: response.data.ticket,
+                      url: response.data.url
+                    }
+                    res.send(rsp);
+                  } else {
+                    errorRsp('enrollQrcode update mongodb error')
+                  }
+                })
+              } else {
+                errorRsp('enrollQrcode get qrcode from wechat by wechat rsp , check config')
+              }
+            })
+            .catch(function(error) {
+              logger.error('enrollQrcode get qrcode from wechat\n', error)
+              errorRsp('enrollQrcode get qrcode from wechat by network')
+            });
+        } else {
+          errorRsp('enrollQrcode insertDocuments error')
+        }
+      });
+    }
+  });
+
+  function errorRsp(msg) {
+    logger.error('enrollQrcode on process', msg)
+    var rsp = {
+      status: 'error',
+      msg: msg
+    }
+    res.send(rsp)
+  }
+}
+
+function initialApply(options, req) {
+  return {
+    unionId: req.session.fetchWechatUserInfo.unionid,
+    status: options.status,
+    applyTime: new Date(),
+    confirmTime: new Date(),
+    displayNickName: options.displayNickName,
+    wechatNickName: req.session.fetchWechatUserInfo.nickname,
+    headimgurl: req.session.fetchWechatUserInfo.headimgurl,
+  }
+}
+
+function checkEnroll(unionId, applys) {
+  for (var i in applys) {
+    if (unionId == applys[i].unionId) {
+      return true
+    }
+  }
+  return false
+}
+
 app.get(CONFIG.DIR_FIRST + '/ajaxPub/signWechat', signOutWithAjax);
 app.get(CONFIG.DIR_FIRST + '/ajax/page/getSession', getSession);
 app.get(CONFIG.DIR_FIRST + '/ajax/getActivity', getActivity);
+app.post(CONFIG.DIR_FIRST + '/ajax/enrollActivity', jsonParser, enrollActivity);
+app.post(CONFIG.DIR_FIRST + '/ajax/enrollQrcode', jsonParser, enrollQrcode);
 app.post(CONFIG.DIR_FIRST + '/ajax/createActivity', jsonParser, createActivity);
 
 // console.log(sign(poolConfig, 'http://example.com'));
