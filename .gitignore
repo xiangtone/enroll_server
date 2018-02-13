@@ -60,3 +60,4 @@ typings/
 /config.js
 /apiclient_cert.p12
 /config.js
+/key_weixin_pay.p12
