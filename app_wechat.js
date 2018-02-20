@@ -302,7 +302,6 @@ function createActivity(req, res) {
 }
 
 function getActivity(req, res) {
-  logger.debug(req.query)
   mo.findOneDocumentById('activitys', req.query.activity_id, function(result) {
     var rsp = {
       status: 'ok',
@@ -597,17 +596,18 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
             } else {
               res.reply([{
                 title: '点击报名参加' + activity.activityTitle,
-                description: activity.founderNickName + '组织',
+                description: activity.founderNickName + '组织' + activity.activityTitle,
                 picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
                 url: 'https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_view?activity_id=' + qrcode.activityId
               }]);
+              // resp = '<xml><ToUserName><![CDATA[' + req.body.xml.fromusername + ']]></ToUserName><FromUserName><![CDATA[' + req.body.xml.tousername + ']]></FromUserName><CreateTime>' + ctimeSecond + '</CreateTime><MsgType><![CDATA[news]]></MsgType><ArticleCount>1</ArticleCount><Articles><item><Title><![CDATA[点击报名参加' + activity.activityTitle + ']]></Title><Description><![CDATA[' + activity.founderNickName + '组织]]></Description><PicUrl><![CDATA[https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png]]></PicUrl><Url><![CDATA[https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_view?activity_id=' + qrcode.activityId + ']]></Url></item></Articles></xml>'
             }
           } else {
-            res.reply('activity is not existed . ')
+            res.reply("error:activity is not existed")
           }
         })
       } else {
-        res.reply('qrcode is not existed . ')
+        res.reply("error:qrcode is not existed")
       }
     });
   }
@@ -620,19 +620,6 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
     res.send('');
   }
 }));
-
-app.get(CONFIG.DIR_FIRST + '/ajaxPub/signWechat', signOutWithAjax);
-app.get(CONFIG.DIR_FIRST + '/ajax/page/getSession', getSession);
-app.get(CONFIG.DIR_FIRST + '/ajax/getActivity', getActivity);
-app.post(CONFIG.DIR_FIRST + '/ajax/enrollActivity', jsonParser, enrollActivityAjax);
-app.post(CONFIG.DIR_FIRST + '/ajax/enrollQrcode', jsonParser, enrollQrcode);
-app.post(CONFIG.DIR_FIRST + '/ajax/createActivity', jsonParser, createActivity);
-// app.post(CONFIG.DIR_FIRST + '/ajInterface', xmlparser({
-//   trim: false,
-//   explicitArray: false
-// }), notify);
-
-app.get(CONFIG.DIR_FIRST + '/ajInterface', notifyGet);
 
 app.use(bodyParser.text({ type: '*/xml' }));
 
@@ -671,6 +658,19 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
   // 回复错误消息
   // res.reply('错误信息');
 });
+
+app.get(CONFIG.DIR_FIRST + '/ajaxPub/signWechat', signOutWithAjax);
+app.get(CONFIG.DIR_FIRST + '/ajax/page/getSession', getSession);
+app.get(CONFIG.DIR_FIRST + '/ajax/getActivity', getActivity);
+app.post(CONFIG.DIR_FIRST + '/ajax/enrollActivity', jsonParser, enrollActivityAjax);
+app.post(CONFIG.DIR_FIRST + '/ajax/enrollQrcode', jsonParser, enrollQrcode);
+app.post(CONFIG.DIR_FIRST + '/ajax/createActivity', jsonParser, createActivity);
+// app.post(CONFIG.DIR_FIRST + '/ajInterface', xmlparser({
+//   trim: false,
+//   explicitArray: false
+// }), notify);
+
+app.get(CONFIG.DIR_FIRST + '/ajInterface', notifyGet);
 
 // console.log(sign(poolConfig, 'http://example.com'));
 
