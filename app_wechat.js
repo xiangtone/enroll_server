@@ -60,46 +60,7 @@ async() => {
 
 const weixin_pay_api = new tenpay(configTenPay);
 
-app.use(bodyParser.text({ type: '*/xml' }));
 
-app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req, res) => {
-  let info = req.weixin;
-  logger.debug('weixin_pay_api.middlewareForExpress', info)
-  mo.findOneDocumentById('unifiedOrders', info.out_trade_no, function(unifiedOrder) {
-    logger.debug('weixin_pay_api.middlewareForExpress', unifiedOrder)
-    if (unifiedOrder && unifiedOrder.payProcess && unifiedOrder.payProcess == 'wait') {
-      mo.findOneDocumentById('activitys', unifiedOrder.activityId, function(activity) {
-        logger.debug('weixin_pay_api.middlewareForExpress', activity)
-        var applyArray = checkEnroll(unifiedOrder.wechatUserInfo.unionid, activity.applys)
-        logger.debug('weixin_pay_api.middlewareForExpress', applyArray, applyArray.length)
-        if (applyArray.length == 0) {
-          enrollActivity(activity, initialApply({
-            status: activity.activityConfirmSwitch ? 'wait' : 'pass',
-            displayNickName: unifiedOrder.displayNickName,
-            enrollNumber: unifiedOrder.enrollNumber,
-            unionId: unifiedOrder.wechatUserInfo.unionid,
-            wechatNickName: unifiedOrder.wechatUserInfo.nickname,
-            headimgurl: unifiedOrder.wechatUserInfo.headimgurl,
-            confirmTime: activity.activityConfirmSwitch ? new Date() : null,
-            enrollPrice: unifiedOrder.enrollPrice,
-          }), function() {
-            mo.updateOne('unifiedOrders', { _id: unifiedOrder._id }, {
-              $set: { payProcess: 'done' }
-            }, function(result) {})
-          })
-        } else {
-
-        }
-      })
-    }
-  });
-  // 业务逻辑...
-
-  // 回复成功消息
-  res.reply();
-  // 回复错误消息
-  // res.reply('错误信息');
-});
 
 app.use(function(req, res, next) {
   var isNext = true;
@@ -259,18 +220,6 @@ app.use(function(req, res, next) {
         logger.debug('userinfo', rev);
         if (rev.openid) {
           req.session.wechatUserInfo = rev
-          /*
-          poolConfig.query("update tbl_wechat_users set nickName=?,headImgUrl=? where openId=?  ", [rev.nickname, rev.headimgurl, rev.openid], function(err, rows, fields) {
-            if (err) {
-              logger.error(err);
-            } else {
-              if (!rows.constructor.name == 'OkPacket') {
-                logger.error('update tbl_wechat_users set getUserInfoWithOpenId:')
-                logger.error(rows)
-              }
-            }
-          })
-          */
           redirectAfterOAuthSuccess();
         } else {
           logger.error(url)
@@ -284,7 +233,6 @@ app.use(function(req, res, next) {
 
   function redirectAfterOAuthSuccess() {
     var target = pu.cleanedUrl(req)
-    var timestamp = +new Date();
     if (target.indexOf('f=') == -1) {
       if (target.indexOf('?') == -1) {
         target += '?f=' + req.session.fetchWechatUserInfo.unionid
@@ -354,6 +302,7 @@ function createActivity(req, res) {
 }
 
 function getActivity(req, res) {
+  logger.debug(req.query)
   mo.findOneDocumentById('activitys', req.query.activity_id, function(result) {
     var rsp = {
       status: 'ok',
@@ -364,11 +313,10 @@ function getActivity(req, res) {
 }
 
 function enrollActivity(activity, apply, callback) {
-  activity.applys.push(apply)
+  // activity.applys.push(apply)
   mo.updateOne('activitys', { _id: activity._id }, {
-    $set: { applys: activity.applys }
+    $addToSet: { applys: apply }
   }, function(result) {
-    logger.debug('enrollActivity', result)
     callback()
   })
 }
@@ -389,22 +337,6 @@ function enrollActivityAjax(req, res) {
       }), function() {
         res.send(rsp);
       })
-      // result.applys.push(initialApply({
-      //   status: result.activityConfirmSwitch ? 'wait' : 'pass',
-      //   displayNickName: req.body.displayNickName,
-      //   enrollNumber: req.body.enrollNumber,
-      //   unionId: req.session.fetchWechatUserInfo.unionid,
-      //   wechatNickName: req.session.fetchWechatUserInfo.nickname,
-      //   headimgurl: req.session.fetchWechatUserInfo.headimgurl,
-      //   confirmTime: result.activityConfirmSwitch ? new Date() : null,
-      //   enrollPrice: 0,
-      // }, req))
-      // logger.debug('enrollActivity', result)
-      // mo.updateOne('activitys', { _id: new ObjectId(req.body.activityId) }, {
-      //   $set: { applys: result.applys }
-      // }, function(result) {
-      //   res.send(rsp);
-      // })
     }
 
     async function insertUnifiedOrderCallback(insertedUnifiedOrder) {
@@ -431,7 +363,7 @@ function enrollActivityAjax(req, res) {
     }
 
     var rsp = { status: 'ok' }
-    if ((checkEnroll(req.session.fetchWechatUserInfo.unionid, result.applys)).length > 0) {
+    if ((checkEnrolled(req.session.fetchWechatUserInfo.unionid, result.applys)).length > 0) {
       rsp = {
         status: 'error',
         msg: 'enrolled',
@@ -551,7 +483,7 @@ function initialApply(options) {
   }
 }
 
-function checkEnroll(unionId, applys) {
+function checkEnrolled(unionId, applys) {
   var result = []
   for (var i in applys) {
     if (unionId == applys[i].unionId) {
@@ -559,6 +491,14 @@ function checkEnroll(unionId, applys) {
     }
   }
   return result
+}
+
+function checkActivityEnrollEnable(activity, enrollNumber) {
+  //todo 增加是否允许替补的处理
+  // if (activity.numberMax < activity.applys.length + enrollNumber) {
+  //   return 'enroll count exceed'
+  // }
+  return 'ok'
 }
 
 function notifyGet(req, res) {
@@ -584,44 +524,102 @@ function notify(req, res) {
   }
 }
 
-function procSubsribeNotify(req, res) {
-  var ctimeSecond = new Date().getTime() / 1000
-  var resp = ''
-  mo.findOneDocumentById('qrcodes', req.body.xml.eventkey, function(qrcode) {
-    if (qrcode) {
-      mo.findOneDocumentById('activitys', qrcode.activityId, function(activity) {
-        if (activity) {
-          logger.debug('activity get doc\n', activity)
-          var resp = '<xml><ToUserName><![CDATA[' + req.body.xml.fromusername + ']]></ToUserName><FromUserName><![CDATA[' + req.body.xml.tousername + ']]></FromUserName><CreateTime>' + ctimeSecond + '</CreateTime><MsgType><![CDATA[news]]></MsgType><ArticleCount>1</ArticleCount><Articles><item><Title><![CDATA[点击报名参加' + activity.activityTitle + ']]></Title><Description><![CDATA[' + activity.founderNickName + '组织]]></Description><PicUrl><![CDATA[https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png]]></PicUrl><Url><![CDATA[https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_view?activity_id=' + qrcode.activityId + ']]></Url></item></Articles></xml>'
-          // resp = '<xml><ToUserName><![CDATA[' + req.body.xml.fromusername + ']]></ToUserName><FromUserName><![CDATA[' + req.body.xml.tousername + ']]></FromUserName><CreateTime>' + ctimeSecond + '</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[请点击链接开始注册' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/page/tailor.htm]]></Content></xml>'
-          logger.debug('rsp \n', resp)
-          res.send(resp)
-        } else {
-          res.send('')
-        }
-      })
-    } else {
-      res.send('')
-    }
-  });
-  // poolConfig.query("SELECT state FROM tailors where openId=?", [req.body.xml.fromusername], function(err, rowRs, fields) {
-  //   if (err) {
-  //     throw err;
-  //   } else {
-  //     if (rowRs.length > 0) {
-  //       if (rowRs[0].state == 'normal') {
-  //         resp = '<xml><ToUserName><![CDATA[' + req.body.xml.fromusername + ']]></ToUserName><FromUserName><![CDATA[' + req.body.xml.tousername + ']]></FromUserName><CreateTime>' + ctimeSecond + '</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[您已经是正式缝纫机主，请在网站登录正常使用]]></Content></xml>'
-  //       } else {
-  //         resp = '<xml><ToUserName><![CDATA[' + req.body.xml.fromusername + ']]></ToUserName><FromUserName><![CDATA[' + req.body.xml.tousername + ']]></FromUserName><CreateTime>' + ctimeSecond + '</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[请修改补充资料继续完成注册' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/page/tailor.htm]]></Content></xml>'
-  //       }
-  //     } else {
-  //       resp = '<xml><ToUserName><![CDATA[' + req.body.xml.fromusername + ']]></ToUserName><FromUserName><![CDATA[' + req.body.xml.tousername + ']]></FromUserName><CreateTime>' + ctimeSecond + '</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[请点击链接开始注册' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/page/tailor.htm]]></Content></xml>'
-  //     }
-  //   }
-  //   logger.debug('procSubsribeNotify', resp)
-  //   res.send(resp)
-  // });
-}
+
+
+var wechat = require('wechat');
+var config = {
+  token: 'fuming',
+  appid: CONFIG.WECHAT.APPID,
+  encodingAESKey: 'XKC4S4xYcIIeAf7KwvXhCfUJVQzivlribjKnxjwjOvk',
+  checkSignature: false // 可选，默认为true。由于微信公众平台接口调试工具在明文模式下不发送签名，所以如要使用该测试工具，请将其设置为false
+};
+
+app.use(express.query());
+app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, next) {
+  // 微信输入信息都在req.weixin上
+  var message = req.weixin;
+  logger.debug(message)
+
+  function procSubsribeNotify() {
+    var ctimeSecond = new Date().getTime() / 1000
+    var resp = ''
+
+    mo.findOneDocumentById('qrcodes', message.EventKey, function(qrcode) {
+      if (qrcode) {
+        mo.findOneDocumentById('activitys', qrcode.activityId, function(activity) {
+          if (activity) {
+            if (activity.enrollPrice == 0 && !activity.enrollAgentSwitch) {
+              var checkActivityEnrollEnableResult = checkActivityEnrollEnable(activity, 1)
+              if (checkActivityEnrollEnableResult == 'ok') {
+                axios.get('https://api.weixin.qq.com/cgi-bin/user/info?access_token=' + globalInfo.token.value + '&openid=' + message.FromUserName + '&lang=zh_CN')
+                  .then(function(response) {
+                    var applyArray = checkEnrolled(response.data.unionid, activity.applys)
+                    if (applyArray.length == 0) {
+                      enrollActivity(activity, initialApply({
+                        status: activity.activityConfirmSwitch ? 'wait' : 'pass',
+                        displayNickName: response.data.nickname,
+                        enrollNumber: 1,
+                        unionId: response.data.unionid,
+                        wechatNickName: response.data.nickname,
+                        headimgurl: response.data.headimgurl,
+                        confirmTime: activity.activityConfirmSwitch ? new Date() : null,
+                        enrollPrice: 0,
+                      }), function() {
+                        res.reply([{
+                          title: '报名成功，点击查看',
+                          description: activity.founderNickName + '组织的' + activity.activityTitle,
+                          picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
+                          url: 'https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_view?activity_id=' + qrcode.activityId
+                        }]);
+                      })
+                    } else {
+                      res.reply([{
+                        title: '您已经报名参加，点击查看',
+                        description: activity.founderNickName + '组织的' + activity.activityTitle,
+                        picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
+                        url: 'https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_view?activity_id=' + qrcode.activityId
+                      }]);
+                    }
+                  })
+                  .catch(function(error) {
+                    logger.error('enrollQrcode get qrcode from wechat\n', error)
+                    errorRsp('enrollQrcode get qrcode from wechat by network')
+                  });
+
+              } else {
+                res.reply([{
+                  title: activity.activityTitle + ':' + checkActivityEnrollEnableResult + ':查看详情',
+                  description: activity.founderNickName + '组织的' + activity.activityTitle,
+                  picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
+                  url: 'https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_view?activity_id=' + qrcode.activityId
+                }]);
+              }
+            } else {
+              res.reply([{
+                title: '点击报名参加' + activity.activityTitle,
+                description: activity.founderNickName + '组织',
+                picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
+                url: 'https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_view?activity_id=' + qrcode.activityId
+              }]);
+            }
+          } else {
+            res.reply('activity is not existed . ')
+          }
+        })
+      } else {
+        res.reply('qrcode is not existed . ')
+      }
+    });
+  }
+  // res.send('<xml><return_code><![CDATA[SUCCESS]]></return_code><return_msg><![CDATA[OK]]></return_msg></xml>');
+  if (message.MsgType == 'event' && message.Event == 'SCAN') {
+    procSubsribeNotify()
+  } else if (message.MsgType == 'event' && message.Event == 'subscribe') {
+    procSubsribeNotify()
+  } else {
+    res.send('');
+  }
+}));
 
 app.get(CONFIG.DIR_FIRST + '/ajaxPub/signWechat', signOutWithAjax);
 app.get(CONFIG.DIR_FIRST + '/ajax/page/getSession', getSession);
@@ -629,11 +627,50 @@ app.get(CONFIG.DIR_FIRST + '/ajax/getActivity', getActivity);
 app.post(CONFIG.DIR_FIRST + '/ajax/enrollActivity', jsonParser, enrollActivityAjax);
 app.post(CONFIG.DIR_FIRST + '/ajax/enrollQrcode', jsonParser, enrollQrcode);
 app.post(CONFIG.DIR_FIRST + '/ajax/createActivity', jsonParser, createActivity);
-app.post(CONFIG.DIR_FIRST + '/ajInterface', xmlparser({
-  trim: false,
-  explicitArray: false
-}), notify);
+// app.post(CONFIG.DIR_FIRST + '/ajInterface', xmlparser({
+//   trim: false,
+//   explicitArray: false
+// }), notify);
+
 app.get(CONFIG.DIR_FIRST + '/ajInterface', notifyGet);
+
+app.use(bodyParser.text({ type: '*/xml' }));
+
+app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req, res) => {
+  let info = req.weixin;
+  logger.debug('weixin_pay_api.middlewareForExpress', info)
+  mo.findOneDocumentById('unifiedOrders', info.out_trade_no, function(unifiedOrder) {
+    if (unifiedOrder && unifiedOrder.payProcess && unifiedOrder.payProcess == 'wait') {
+      mo.findOneDocumentById('activitys', unifiedOrder.activityId, function(activity) {
+        var applyArray = checkEnrolled(unifiedOrder.wechatUserInfo.unionid, activity.applys)
+        if (applyArray.length == 0) {
+          enrollActivity(activity, initialApply({
+            status: activity.activityConfirmSwitch ? 'wait' : 'pass',
+            displayNickName: unifiedOrder.displayNickName,
+            enrollNumber: unifiedOrder.enrollNumber,
+            unionId: unifiedOrder.wechatUserInfo.unionid,
+            wechatNickName: unifiedOrder.wechatUserInfo.nickname,
+            headimgurl: unifiedOrder.wechatUserInfo.headimgurl,
+            confirmTime: activity.activityConfirmSwitch ? new Date() : null,
+            enrollPrice: unifiedOrder.enrollPrice,
+          }), function() {
+            mo.updateOne('unifiedOrders', { _id: unifiedOrder._id }, {
+              $set: { payProcess: 'done' }
+            }, function(result) {})
+          })
+        } else {
+
+        }
+      })
+    }
+  });
+  // 业务逻辑...
+
+  // 回复成功消息
+  res.reply();
+  // 回复错误消息
+  // res.reply('错误信息');
+});
 
 // console.log(sign(poolConfig, 'http://example.com'));
 
