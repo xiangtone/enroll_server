@@ -1,5 +1,6 @@
 'use strict';
 var express = require('express');
+const { Mongo } = require('mongodb-pool')
 const session = require('express-session');
 const MongoStore = require('connect-mongo')(session);
 var mysql = require('mysql');
@@ -59,8 +60,6 @@ async() => {
 
 
 const weixin_pay_api = new tenpay(configTenPay);
-
-
 
 app.use(function(req, res, next) {
   var isNext = true;
@@ -276,7 +275,9 @@ function createActivity(req, res) {
       enrollPrice: req.body.enrollPrice,
       activityConfirmSwitch: req.body.activityConfirmSwitch,
       enrollAgentSwitch: req.body.enrollAgentSwitch,
+      alternateSwitch: req.body.alternateSwitch,
       founderUnionId: req.session.fetchWechatUserInfo.unionid,
+      founderOpenId: req.session.fetchWechatUserInfo.openid,
       lastModifyTime: new Date(),
       applys: [
         initialApply({
@@ -321,17 +322,17 @@ function enrollActivity(activity, apply, callback) {
 }
 
 function enrollActivityAjax(req, res) {
-  mo.findOneDocumentById('activitys', req.body.activityId, function(result) {
+  mo.findOneDocumentById('activitys', req.body.activityId, function(activity) {
 
     function enrollAndSend() {
-      enrollActivity(result, initialApply({
-        status: result.activityConfirmSwitch ? 'wait' : 'pass',
+      enrollActivity(activity, initialApply({
+        status: activity.activityConfirmSwitch ? 'wait' : 'pass',
         displayNickName: req.body.displayNickName,
         enrollNumber: req.body.enrollNumber,
         unionId: req.session.fetchWechatUserInfo.unionid,
         wechatNickName: req.session.fetchWechatUserInfo.nickname,
         headimgurl: req.session.fetchWechatUserInfo.headimgurl,
-        confirmTime: result.activityConfirmSwitch ? new Date() : null,
+        confirmTime: activity.activityConfirmSwitch ? new Date() : null,
         enrollPrice: 0,
       }), function() {
         res.send(rsp);
@@ -344,7 +345,7 @@ function enrollActivityAjax(req, res) {
           let unifiedOrder = await weixin_pay_api.unifiedOrder({
             out_trade_no: insertedUnifiedOrder.ops[0]._id.toString(),
             body: '断舍离-活动费用',
-            total_fee: 1,
+            total_fee: 100 * activity.enrollPrice * req.body.enrollNumber,
             openid: req.session.fetchWechatUserInfo.openid,
             // notify_url: 'https://' + CONFIG.DOMAIN + '/' + CONFIG.PAY_DIR_FIRST + insertedUnifiedOrder.ops[0]._id.toString(),
           });
@@ -362,14 +363,14 @@ function enrollActivityAjax(req, res) {
     }
 
     var rsp = { status: 'ok' }
-    if ((checkEnrolled(req.session.fetchWechatUserInfo.unionid, result.applys)).length > 0) {
+    if ((checkEnrolled(req.session.fetchWechatUserInfo.unionid, activity.applys)).length > 0) {
       rsp = {
         status: 'error',
         msg: 'enrolled',
       }
       res.send(rsp);
     } else {
-      if (result.enrollPrice == 0) {
+      if (activity.enrollPrice == 0) {
         enrollAndSend()
       } else {
         var insertUnifiedOrderData = {
@@ -378,7 +379,7 @@ function enrollActivityAjax(req, res) {
             activityId: req.body.activityId,
             wechatUserInfo: req.session.fetchWechatUserInfo,
             enrollNumber: req.body.enrollNumber,
-            enrollPrice: result.enrollPrice,
+            enrollPrice: activity.enrollPrice,
             expiredTime: new Date(Date.now() + 86400 * 1000 * 3),
             payProcess: 'wait',
             displayNickName: req.body.displayNickName,
@@ -479,6 +480,9 @@ function initialApply(options) {
     headimgurl: options.headimgurl,
     enrollNumber: options.enrollNumber ? options.enrollNumber : 1,
     enrollPrice: options.enrollPrice ? options.enrollPrice : 0,
+    payToFounderStatus: options.payToFounderStatus ? options.payToFounderStatus : null,
+    payToFounderDateTime: options.payToFounderDateTime ? options.payToFounderDateTime : null,
+    payToFounderAmount: options.payToFounderAmount ? options.payToFounderAmount : null,
   }
 }
 
@@ -523,8 +527,6 @@ function notify(req, res) {
   }
 }
 
-
-
 var wechat = require('wechat');
 var config = {
   token: 'fuming',
@@ -532,6 +534,25 @@ var config = {
   encodingAESKey: 'XKC4S4xYcIIeAf7KwvXhCfUJVQzivlribjKnxjwjOvk',
   checkSignature: false // 可选，默认为true。由于微信公众平台接口调试工具在明文模式下不发送签名，所以如要使用该测试工具，请将其设置为false
 };
+
+Mongo.getConnection(CONFIG.MONGODB.URL_ACTIVITY, {
+  poolSize: 3,
+  auto_reconnect: true,
+}).then(
+  function() {
+    function freshGlobalConfig() {
+      // mo.findDocuments({ collection: 'configs' }, function(docs) {
+      //   logger.debug('freshGlobalConfig', docs)
+      //   setTimeout(freshGlobalConfig(), 5000)
+      // })
+      mo.findOneDocumentByFilter('configs', {}, {}, function(docs) {
+        globalInfo.config = docs
+        setTimeout(freshGlobalConfig, 5000)
+      })
+    }
+    freshGlobalConfig()
+  }
+).catch(error => { logger.error('caught', err); })
 
 app.use(express.query());
 app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, next) {
@@ -584,7 +605,6 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
                     logger.error('enrollQrcode get qrcode from wechat\n', error)
                     errorRsp('enrollQrcode get qrcode from wechat by network')
                   });
-
               } else {
                 res.reply([{
                   title: activity.activityTitle + ':' + checkActivityEnrollEnableResult + ':查看详情',
@@ -628,9 +648,33 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
   logger.debug('weixin_pay_api.middlewareForExpress', info)
   mo.findOneDocumentById('unifiedOrders', info.out_trade_no, function(unifiedOrder) {
     if (unifiedOrder && unifiedOrder.payProcess && unifiedOrder.payProcess == 'wait') {
-      mo.findOneDocumentById('activitys', unifiedOrder.activityId, function(activity) {
+      mo.findOneDocumentById('activitys', unifiedOrder.activityId, async function(activity) {
         var applyArray = checkEnrolled(unifiedOrder.wechatUserInfo.unionid, activity.applys)
         if (applyArray.length == 0) {
+          var schedulePayDateTime = (new Date(activity.activityDateTime)).getTime() - 86400000 * activity.confirmDayCount
+          var amount = 0
+          if (schedulePayDateTime < Date.now() && !activity.activityConfirmSwitch) {
+            var payToFounderStatus = 'payed'
+            if (info.total_fee == 100 * unifiedOrder.enrollPrice * unifiedOrder.enrollNumber) {
+              if (info.total_fee >= 100) {
+                amount = info.total_fee * (1 - globalInfo.config.payRatio)
+                logger.debug('amount', amount)
+                if (amount < 100) {
+                  amount = 100
+                }
+                let transferResult = await weixin_pay_api.transfers({
+                  partner_trade_no: unifiedOrder._id.toString(),
+                  openid: activity.founderOpenId,
+                  amount: amount,
+                  desc: '企业付款描述信息',
+                  check_name: 'NO_CHECK',
+                });
+                logger.debug('transferResult', transferResult)
+              }
+            }
+          } else {
+            var payToFounderStatus = 'wait'
+          }
           enrollActivity(activity, initialApply({
             status: activity.activityConfirmSwitch ? 'wait' : 'pass',
             displayNickName: unifiedOrder.displayNickName,
@@ -640,10 +684,15 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
             headimgurl: unifiedOrder.wechatUserInfo.headimgurl,
             confirmTime: activity.activityConfirmSwitch ? new Date() : null,
             enrollPrice: unifiedOrder.enrollPrice,
+            payToFounderStatus: payToFounderStatus,
+            payToFounderDateTime: payToFounderStatus == 'payed' ? new Date() : null,
+            payToFounderAmount: amount,
           }), function() {
             mo.updateOne('unifiedOrders', { _id: unifiedOrder._id }, {
               $set: { payProcess: 'done' }
-            }, function(result) {})
+            }, function(result) {
+
+            })
           })
         } else {
 
