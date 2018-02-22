@@ -76,6 +76,7 @@ Mongo.getConnection(CONFIG.MONGODB.URL_ACTIVITY, {
     freshGlobalConfig()
 
     function scanPayToFounder() {
+      logger.debug('scanPayToFounder')
       var currentTime = new Date()
       var findTarget = {
         collection: 'activitys',
@@ -86,51 +87,55 @@ Mongo.getConnection(CONFIG.MONGODB.URL_ACTIVITY, {
         }
       }
       mo.findDocuments(findTarget, function(docs) {
-        logger.debug('scanPayToFounder', docs)
-        for (var i = 0; i < docs.length; i++) {
-          logger.debug('i', i)
-          var activity = docs[i]
-          var amount = 0
-          var count = 0
-          var updateData = []
-          for (var j = 0; j < activity.applys.length; j++) {
-            var apply = activity.applys[j]
-            if (apply.status == 'pass' && apply.payToFounderStatus == 'wait' && apply.payToFounderSchedule < currentTime) {
-              var fee = 100 * apply.enrollPrice * apply.enrollNumber * (1 - globalInfo.config.payRatio)
-              amount += fee
-              count++
-              updateData.push({ index: j, fee: fee })
+        if (docs.length == 0) {
+          setTimeout(scanPayToFounder, 5000)
+        } else {
+          logger.debug('scanPayToFounder', docs)
+          for (var i = 0; i < docs.length; i++) {
+            logger.debug('i', i)
+            var activity = docs[i]
+            var amount = 0
+            var count = 0
+            var updateData = []
+            for (var j = 0; j < activity.applys.length; j++) {
+              var apply = activity.applys[j]
+              if (apply.status == 'pass' && apply.payToFounderStatus == 'wait' && apply.payToFounderSchedule < currentTime) {
+                var fee = 100 * apply.enrollPrice * apply.enrollNumber * (1 - globalInfo.config.payRatio)
+                amount += fee
+                count++
+                updateData.push({ index: j, fee: fee })
+              }
             }
+            logger.debug('amount', amount)
+            logger.debug('updateData', updateData)
+            if (amount < 100) {
+              logger.error('scanPayToFounder amount less 100 limit ', activity._id)
+              continue;
+            }
+            var updateApplys = {}
+            for (var k of updateData) {
+              updateApplys['applys.' + k.index + '.payToFounderStatus'] = 'payed'
+              updateApplys['applys.' + k.index + '.payToFounderDateTime'] = currentTime
+              updateApplys['applys.' + k.index + '.payToFounderAmount'] = k.fee
+            }
+            logger.debug('updateApplys', updateApplys)
+            mo.updateOne('activitys', {
+              _id: activity._id,
+            }, { $set: updateApplys }, function(updatedApplys) {
+              logger.debug('scanPayToFounder updated', updatedApplys)
+              var transferInfo = {
+                openid: activity.founderOpenId,
+                amount: amount,
+                desc: activity.activityTitle + '的' + count + '人活动费用',
+                check_name: 'NO_CHECK',
+              }
+              transferAndRecord(transferInfo, function() {
+                if (i + 1 == docs.length) {
+                  setTimeout(scanPayToFounder, 5000)
+                }
+              })
+            })
           }
-          logger.debug('amount', amount)
-          logger.debug('updateData', updateData)
-          if (amount < 100) {
-            logger.error('scanPayToFounder amount less 100 limit ', activity._id)
-            continue;
-          }
-          var updateApplys = {}
-          for (var k of updateData) {
-            updateApplys['applys.' + k.index + '.payToFounderStatus'] = 'payed'
-            updateApplys['applys.' + k.index + '.payToFounderDateTime'] = currentTime
-            updateApplys['applys.' + k.index + '.payToFounderAmount'] = k.fee
-          }
-          logger.debug('updateApplys', updateApplys)
-          mo.updateOne('activity', {
-            _id: activity._id,
-          }, { $set: updateApplys }, function(updatedApplys) {
-            logger.debug('scanPayToFounder updated', updatedApplys)
-            // var transferInfo = {
-    //   openid: activity.founderOpenId,
-    //   amount: amount,
-    //   desc: activity.activityTitle + '的' + count + '人活动费用',
-    //   check_name: 'NO_CHECK',
-    // }
-    // transferAndRecord(transferInfo, function() {
-    //   if (i + 1 == docs.length) {
-    //     setTimeout(scanPayToFounder, 5000)
-    //   }
-    // })
-          })
         }
       })
     }
