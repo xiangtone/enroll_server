@@ -58,6 +58,85 @@ async() => {
   }
 }
 
+Mongo.getConnection(CONFIG.MONGODB.URL_ACTIVITY, {
+  poolSize: 3,
+  auto_reconnect: true,
+}).then(
+  function() {
+    function freshGlobalConfig() {
+      // mo.findDocuments({ collection: 'configs' }, function(docs) {
+      //   logger.debug('freshGlobalConfig', docs)
+      //   setTimeout(freshGlobalConfig(), 5000)
+      // })
+      mo.findOneDocumentByFilter('configs', {}, {}, function(docs) {
+        globalInfo.config = docs
+        setTimeout(freshGlobalConfig, 5000)
+      })
+    }
+    freshGlobalConfig()
+
+    function scanPayToFounder() {
+      var currentTime = new Date()
+      var findTarget = {
+        collection: 'activitys',
+        condition: {
+          'applys.status': 'pass',
+          'applys.payToFounderStatus': 'wait',
+          'applys.payToFounderSchedule': { $lt: currentTime }
+        }
+      }
+      mo.findDocuments(findTarget, function(docs) {
+        logger.debug('scanPayToFounder', docs)
+        for (var i = 0; i < docs.length; i++) {
+          logger.debug('i', i)
+          var activity = docs[i]
+          var amount = 0
+          var count = 0
+          var updateData = []
+          for (var j = 0; j < activity.applys.length; j++) {
+            var apply = activity.applys[j]
+            if (apply.status == 'pass' && apply.payToFounderStatus == 'wait' && apply.payToFounderSchedule < currentTime) {
+              var fee = 100 * apply.enrollPrice * apply.enrollNumber * (1 - globalInfo.config.payRatio)
+              amount += fee
+              count++
+              updateData.push({ index: j, fee: fee })
+            }
+          }
+          logger.debug('amount', amount)
+          logger.debug('updateData', updateData)
+          if (amount < 100) {
+            logger.error('scanPayToFounder amount less 100 limit ', activity._id)
+            continue;
+          }
+          var updateApplys = {}
+          for (var k of updateData) {
+            updateApplys['applys.' + k.index + '.payToFounderStatus'] = 'payed'
+            updateApplys['applys.' + k.index + '.payToFounderDateTime'] = currentTime
+            updateApplys['applys.' + k.index + '.payToFounderAmount'] = k.fee
+          }
+          logger.debug('updateApplys', updateApplys)
+          mo.updateOne('activity', {
+            _id: activity._id,
+          }, { $set: updateApplys }, function(updatedApplys) {
+            logger.debug('scanPayToFounder updated', updatedApplys)
+            // var transferInfo = {
+    //   openid: activity.founderOpenId,
+    //   amount: amount,
+    //   desc: activity.activityTitle + '的' + count + '人活动费用',
+    //   check_name: 'NO_CHECK',
+    // }
+    // transferAndRecord(transferInfo, function() {
+    //   if (i + 1 == docs.length) {
+    //     setTimeout(scanPayToFounder, 5000)
+    //   }
+    // })
+          })
+        }
+      })
+    }
+    scanPayToFounder()
+  }
+).catch(error => { logger.error('caught', err); })
 
 const weixin_pay_api = new tenpay(configTenPay);
 
@@ -282,6 +361,7 @@ function createActivity(req, res) {
       applys: [
         initialApply({
           unionId: req.session.fetchWechatUserInfo.unionid,
+          openId: req.session.fetchWechatUserInfo.openid,
           status: 'pass',
           wechatNickName: req.session.fetchWechatUserInfo.nickname,
           displayNickName: req.body.founderNickName,
@@ -330,6 +410,7 @@ function enrollActivityAjax(req, res) {
         displayNickName: req.body.displayNickName,
         enrollNumber: req.body.enrollNumber,
         unionId: req.session.fetchWechatUserInfo.unionid,
+        openId: req.session.fetchWechatUserInfo.openid,
         wechatNickName: req.session.fetchWechatUserInfo.nickname,
         headimgurl: req.session.fetchWechatUserInfo.headimgurl,
         confirmTime: activity.activityConfirmSwitch ? new Date() : null,
@@ -472,6 +553,7 @@ function enrollQrcode(req, res) {
 function initialApply(options) {
   return {
     unionId: options.unionId,
+    openId: options.openId,
     status: options.status,
     applyTime: new Date(),
     confirmTime: options.confirmTime,
@@ -483,12 +565,13 @@ function initialApply(options) {
     payToFounderStatus: options.payToFounderStatus ? options.payToFounderStatus : null,
     payToFounderDateTime: options.payToFounderDateTime ? options.payToFounderDateTime : null,
     payToFounderAmount: options.payToFounderAmount ? options.payToFounderAmount : null,
+    payToFounderSchedule: options.payToFounderSchedule ? options.payToFounderSchedule : null,
   }
 }
 
 function checkEnrolled(unionId, applys) {
   var result = []
-  for (var i in applys) {
+  for (var i = 0; i < applys.length; i++) {
     if (unionId == applys[i].unionId) {
       result.push(i)
     }
@@ -535,25 +618,6 @@ var config = {
   checkSignature: false // 可选，默认为true。由于微信公众平台接口调试工具在明文模式下不发送签名，所以如要使用该测试工具，请将其设置为false
 };
 
-Mongo.getConnection(CONFIG.MONGODB.URL_ACTIVITY, {
-  poolSize: 3,
-  auto_reconnect: true,
-}).then(
-  function() {
-    function freshGlobalConfig() {
-      // mo.findDocuments({ collection: 'configs' }, function(docs) {
-      //   logger.debug('freshGlobalConfig', docs)
-      //   setTimeout(freshGlobalConfig(), 5000)
-      // })
-      mo.findOneDocumentByFilter('configs', {}, {}, function(docs) {
-        globalInfo.config = docs
-        setTimeout(freshGlobalConfig, 5000)
-      })
-    }
-    freshGlobalConfig()
-  }
-).catch(error => { logger.error('caught', err); })
-
 app.use(express.query());
 app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, next) {
   // 微信输入信息都在req.weixin上
@@ -576,6 +640,7 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
                     var applyArray = checkEnrolled(response.data.unionid, activity.applys)
                     if (applyArray.length == 0) {
                       enrollActivity(activity, initialApply({
+                        openId: response.data.openid,
                         status: activity.activityConfirmSwitch ? 'wait' : 'pass',
                         displayNickName: response.data.nickname,
                         enrollNumber: 1,
@@ -641,6 +706,25 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
   }
 }));
 
+function transferAndRecord(transferInfo, callback) {
+  var insertData = {
+    collection: 'transferLogs',
+    documents: [{
+      transferInfo: transferInfo
+    }]
+  }
+  mo.insertDocuments(insertData, async function(insertResult) {
+    transferInfo.partner_trade_no = insertResult.ops[0]._id.toString()
+    let transferResult = await weixin_pay_api.transfers(transferInfo);
+    logger.debug('transferResult', transferResult)
+    mo.updateOne('transferLogs', { _id: insertResult.ops[0]._id }, {
+      $set: { transferResult: transferResult }
+    }, function(updateResult) {
+      callback(updateResult)
+    })
+  })
+}
+
 app.use(bodyParser.text({ type: '*/xml' }));
 
 app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req, res) => {
@@ -648,38 +732,39 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
   logger.debug('weixin_pay_api.middlewareForExpress', info)
   mo.findOneDocumentById('unifiedOrders', info.out_trade_no, function(unifiedOrder) {
     if (unifiedOrder && unifiedOrder.payProcess && unifiedOrder.payProcess == 'wait') {
-      mo.findOneDocumentById('activitys', unifiedOrder.activityId, async function(activity) {
+      mo.findOneDocumentById('activitys', unifiedOrder.activityId, function(activity) {
         var applyArray = checkEnrolled(unifiedOrder.wechatUserInfo.unionid, activity.applys)
         if (applyArray.length == 0) {
           var schedulePayDateTime = (new Date(activity.activityDateTime)).getTime() - 86400000 * activity.confirmDayCount
           var amount = 0
+          var payToFounderSchedule = null
           if (schedulePayDateTime < Date.now() && !activity.activityConfirmSwitch) {
             var payToFounderStatus = 'payed'
             if (info.total_fee == 100 * unifiedOrder.enrollPrice * unifiedOrder.enrollNumber) {
               if (info.total_fee >= 100) {
                 amount = info.total_fee * (1 - globalInfo.config.payRatio)
-                logger.debug('amount', amount)
                 if (amount < 100) {
                   amount = 100
                 }
-                let transferResult = await weixin_pay_api.transfers({
-                  partner_trade_no: unifiedOrder._id.toString(),
+                var transferInfo = {
                   openid: activity.founderOpenId,
                   amount: amount,
-                  desc: '企业付款描述信息',
+                  desc: unifiedOrder.displayNickName + '支付的' + activity.activityTitle + '活动费用',
                   check_name: 'NO_CHECK',
-                });
-                logger.debug('transferResult', transferResult)
+                }
+                transferAndRecord(transferInfo)
               }
             }
           } else {
             var payToFounderStatus = 'wait'
+            payToFounderSchedule = new Date(schedulePayDateTime)
           }
           enrollActivity(activity, initialApply({
             status: activity.activityConfirmSwitch ? 'wait' : 'pass',
             displayNickName: unifiedOrder.displayNickName,
             enrollNumber: unifiedOrder.enrollNumber,
             unionId: unifiedOrder.wechatUserInfo.unionid,
+            openId: unifiedOrder.wechatUserInfo.openid,
             wechatNickName: unifiedOrder.wechatUserInfo.nickname,
             headimgurl: unifiedOrder.wechatUserInfo.headimgurl,
             confirmTime: activity.activityConfirmSwitch ? new Date() : null,
@@ -687,6 +772,7 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
             payToFounderStatus: payToFounderStatus,
             payToFounderDateTime: payToFounderStatus == 'payed' ? new Date() : null,
             payToFounderAmount: amount,
+            payToFounderSchedule: payToFounderSchedule ? payToFounderSchedule : null
           }), function() {
             mo.updateOne('unifiedOrders', { _id: unifiedOrder._id }, {
               $set: { payProcess: 'done' }
@@ -694,9 +780,7 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
 
             })
           })
-        } else {
-
-        }
+        } else {}
       })
     }
   });
