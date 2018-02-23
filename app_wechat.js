@@ -90,10 +90,9 @@ Mongo.getConnection(CONFIG.MONGODB.URL_ACTIVITY, {
         if (docs.length == 0) {
           setTimeout(scanPayToFounder, 5000)
         } else {
-          logger.debug('scanPayToFounder', docs)
-          for (var i = 0; i < docs.length; i++) {
-            logger.debug('i', i)
-            var activity = docs[i]
+          var activityCount = 0
+          docs.forEach(function(activity) {
+            activityCount++
             var amount = 0
             var count = 0
             var updateData = []
@@ -110,7 +109,7 @@ Mongo.getConnection(CONFIG.MONGODB.URL_ACTIVITY, {
             logger.debug('updateData', updateData)
             if (amount < 100) {
               logger.error('scanPayToFounder amount less 100 limit ', activity._id)
-              continue;
+              return;
             }
             var updateApplys = {}
             for (var k of updateData) {
@@ -130,18 +129,18 @@ Mongo.getConnection(CONFIG.MONGODB.URL_ACTIVITY, {
                 check_name: 'NO_CHECK',
               }
               transferAndRecord(transferInfo, function() {
-                if (i + 1 == docs.length) {
+                if (activityCount == docs.length) {
                   setTimeout(scanPayToFounder, 5000)
                 }
               })
             })
-          }
+          })
         }
       })
     }
     scanPayToFounder()
   }
-).catch(error => { logger.error('caught', err); })
+).catch(error => { logger.error('caught', error); })
 
 const weixin_pay_api = new tenpay(configTenPay);
 
