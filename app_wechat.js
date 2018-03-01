@@ -8,6 +8,8 @@ var mongodb = require('mongodb');
 var ObjectId = require('mongodb').ObjectID
 var https = require('https');
 var axios = require('axios');
+var _ = require('lodash');
+var CronJob = require('cron').CronJob;
 var path = require('path');
 var xmlparser = require('express-xml-bodyparser');
 var bodyParser = require('body-parser');
@@ -58,87 +60,75 @@ async() => {
   }
 }
 
+function freshGlobalConfig() {
+  // mo.findDocuments({ collection: 'configs' }, function(docs) {
+  //   logger.debug('freshGlobalConfig', docs)
+  //   setTimeout(freshGlobalConfig(), 5000)
+  // })
+  mo.findOneDocumentByFilter('configs', {}, {}, function(docs) {
+    globalInfo.config = docs
+  })
+}
+
+function scanPayToFounder() {
+  var currentTime = new Date()
+  var findTarget = {
+    collection: 'activitys',
+    condition: {
+      'applys.status': 'pass',
+      'applys.payToFounderStatus': 'wait',
+      'applys.payToFounderSchedule': { $lt: currentTime }
+    }
+  }
+  mo.findDocuments(findTarget, function(docs) {
+    docs.forEach(function(activity) {
+      var amount = 0
+      var count = 0
+      var updateData = []
+      for (var j = 1; j < activity.applys.length; j++) {
+        var apply = activity.applys[j]
+        if (apply.status == 'pass' && apply.payToFounderStatus == 'wait' && apply.payToFounderSchedule < currentTime) {
+          var fee = 100 * apply.enrollPrice * apply.enrollNumber * (1 - globalInfo.config.payRatio)
+          amount += fee
+          count++
+          updateData.push({ index: j, fee: fee })
+        }
+      }
+      if (amount > 0) {
+        if (amount < 100) {
+          logger.error('scanPayToFounder amount less 100 limit ', activity._id)
+          return;
+        }
+        var updateApplys = {}
+        for (var k of updateData) {
+          updateApplys['applys.' + k.index + '.payToFounderStatus'] = 'payed'
+          updateApplys['applys.' + k.index + '.payToFounderDateTime'] = currentTime
+          updateApplys['applys.' + k.index + '.payToFounderAmount'] = k.fee
+        }
+        logger.debug('updateApplys', updateApplys)
+        mo.updateOne('activitys', {
+          _id: activity._id,
+        }, { $set: updateApplys }, function(updatedApplys) {
+          var transferInfo = {
+            openid: activity.founderOpenId,
+            amount: amount,
+            desc: activity.activityTitle + '的' + count + '人活动费用',
+            check_name: 'NO_CHECK',
+          }
+          transferAndLog(transferInfo)
+        })
+      }
+    })
+  })
+}
+
 Mongo.getConnection(CONFIG.MONGODB.URL_ACTIVITY, {
   poolSize: 3,
   auto_reconnect: true,
 }).then(
   function() {
-    function freshGlobalConfig() {
-      // mo.findDocuments({ collection: 'configs' }, function(docs) {
-      //   logger.debug('freshGlobalConfig', docs)
-      //   setTimeout(freshGlobalConfig(), 5000)
-      // })
-      mo.findOneDocumentByFilter('configs', {}, {}, function(docs) {
-        globalInfo.config = docs
-        setTimeout(freshGlobalConfig, 5000)
-      })
-    }
-    freshGlobalConfig()
-
-    function scanPayToFounder() {
-      logger.debug('scanPayToFounder')
-      var currentTime = new Date()
-      var findTarget = {
-        collection: 'activitys',
-        condition: {
-          'applys.status': 'pass',
-          'applys.payToFounderStatus': 'wait',
-          'applys.payToFounderSchedule': { $lt: currentTime }
-        }
-      }
-      mo.findDocuments(findTarget, function(docs) {
-        if (docs.length == 0) {
-          setTimeout(scanPayToFounder, 5000)
-        } else {
-          var activityCount = 0
-          docs.forEach(function(activity) {
-            activityCount++
-            var amount = 0
-            var count = 0
-            var updateData = []
-            for (var j = 0; j < activity.applys.length; j++) {
-              var apply = activity.applys[j]
-              if (apply.status == 'pass' && apply.payToFounderStatus == 'wait' && apply.payToFounderSchedule < currentTime) {
-                var fee = 100 * apply.enrollPrice * apply.enrollNumber * (1 - globalInfo.config.payRatio)
-                amount += fee
-                count++
-                updateData.push({ index: j, fee: fee })
-              }
-            }
-            logger.debug('amount', amount)
-            logger.debug('updateData', updateData)
-            if (amount < 100) {
-              logger.error('scanPayToFounder amount less 100 limit ', activity._id)
-              return;
-            }
-            var updateApplys = {}
-            for (var k of updateData) {
-              updateApplys['applys.' + k.index + '.payToFounderStatus'] = 'payed'
-              updateApplys['applys.' + k.index + '.payToFounderDateTime'] = currentTime
-              updateApplys['applys.' + k.index + '.payToFounderAmount'] = k.fee
-            }
-            logger.debug('updateApplys', updateApplys)
-            mo.updateOne('activitys', {
-              _id: activity._id,
-            }, { $set: updateApplys }, function(updatedApplys) {
-              logger.debug('scanPayToFounder updated', updatedApplys)
-              var transferInfo = {
-                openid: activity.founderOpenId,
-                amount: amount,
-                desc: activity.activityTitle + '的' + count + '人活动费用',
-                check_name: 'NO_CHECK',
-              }
-              transferAndRecord(transferInfo, function() {
-                if (activityCount == docs.length) {
-                  setTimeout(scanPayToFounder, 5000)
-                }
-              })
-            })
-          })
-        }
-      })
-    }
-    scanPayToFounder()
+    new CronJob('*/5 * * * * *', freshGlobalConfig, null, true, 'Asia/Shanghai');
+    new CronJob('*/8 * * * * *', scanPayToFounder, null, true, 'Asia/Shanghai');
   }
 ).catch(error => { logger.error('caught', error); })
 
@@ -386,11 +376,146 @@ function createActivity(req, res) {
   });
 }
 
+function confirmApply(req, res) {
+
+  var targetI = -1
+  var currentTime = new Date()
+
+  function confirm(transferInfo) {
+    var updateData = {}
+    updateData["applys." + targetI + ".status"] = 'pass'
+    updateData["applys." + targetI + ".confirmTime"] = currentTime
+    if (transferInfo) {
+      updateData["applys." + targetI + ".payToFounderStatus"] = 'payed'
+      updateData["applys." + targetI + ".payToFounderDateTime"] = currentTime
+    }
+    mo.updateOne('activitys', {
+      _id: new ObjectId(req.body.activity_id),
+    }, { $set: updateData }, function() {
+      res.send({
+        status: 'ok',
+      })
+      if (transferInfo) {
+        transferAndLog(transferInfo)
+      }
+    })
+  }
+  formatApply(req)
+  mo.findOneDocumentById('activitys', req.body.activity_id, function(activity) {
+    if (checkFounderSession(activity, req)) {
+      for (var i = 1; i < activity.applys.length; i++) {
+        if (_.isEqual(activity.applys[i], req.body.apply)) {
+          targetI = i
+          if (activity.applys[i].payToFounderStatus == 'wait' && activity.applys[i].payToFounderSchedule < currentTime && !activity.applys[i].payToFounderDateTime) {
+            var transferInfo = {
+              openid: activity.founderOpenId,
+              amount: activity.applys[i].payToFounderAmount,
+              desc: activity.applys[i].displayNickName + '支付的' + activity.activityTitle + '活动费用',
+              check_name: 'NO_CHECK',
+            }
+            confirm(transferInfo)
+          } else {
+            confirm()
+          }
+          break;
+        }
+      }
+      if (targetI == -1) {
+        res.send({
+          status: 'error',
+          data: 'not found match activity'
+        });
+      }
+    } else {
+      res.send({
+        status: 'error',
+        data: 'not founder'
+      })
+    }
+  });
+}
+
+function formatApply(req) {
+  if (req.body.apply.applyTime) {
+    req.body.apply.applyTime = new Date(req.body.apply.applyTime)
+  }
+  if (req.body.apply.confirmTime) {
+    req.body.apply.confirmTime = new Date(req.body.apply.confirmTime)
+  }
+  if (req.body.apply.payToFounderDateTime) {
+    req.body.apply.payToFounderDateTime = new Date(req.body.apply.payToFounderDateTime)
+  }
+  if (req.body.apply.payToFounderSchedule) {
+    req.body.apply.payToFounderSchedule = new Date(req.body.apply.payToFounderSchedule)
+  }
+}
+
+function delApply(req, res) {
+
+  function del(targetApply) {
+    mo.updateOne('activitys', {
+      _id: new ObjectId(req.body.activity_id),
+    }, { $pull: { applys: targetApply } }, function() {
+      res.send({
+        status: 'ok',
+      })
+    })
+  }
+  var targetI = -1
+  logger.debug('delApply', req.body)
+  mo.findOneDocumentById('activitys', req.body.activity_id, function(activity) {
+    if (checkFounderSession(activity, req)) {
+      for (var i = 1; i < activity.applys.length; i++) {
+        if (req.body.applyId == activity.applys[i]._id.toString()) {
+          logger.debug('_id', req.body.applyId, i)
+          targetI = i
+          if (activity.applys[i].enrollPrice == 0) {
+            del(activity.applys[i])
+          } else if (activity.applys[i].payToFounderStatus == 'wait' && activity.applys[i].payToFounderSchedule < currentTime && !activity.applys[i].payToFounderDateTime) {
+            var transferInfo = {
+              openid: activity.founderOpenId,
+              amount: activity.applys[i].payToFounderAmount,
+              desc: activity.applys[i].displayNickName + '支付的' + activity.activityTitle + '活动费用',
+              check_name: 'NO_CHECK',
+            }
+          } else {
+            del(activity.applys[i])
+          }
+          break;
+        }
+      }
+      if (targetI == -1) {
+        res.send({
+          status: 'error',
+          data: 'not found match activity'
+        });
+      }
+    } else {
+      res.send({
+        status: 'error',
+        data: 'not founder'
+      })
+    }
+  });
+}
+
+function checkFounderSession(activity, req) {
+
+  if (activity.applyTime) {
+    activity.applyTime = new Date(activity.applyTime)
+  }
+  if (activity.founderUnionId == req.session.fetchWechatUserInfo.unionid) {
+    return true
+  } else {
+    return false
+  }
+}
+
 function getActivity(req, res) {
-  mo.findOneDocumentById('activitys', req.query.activity_id, function(result) {
+  mo.findOneDocumentById('activitys', req.query.activity_id, function(activity) {
     var rsp = {
       status: 'ok',
-      data: result,
+      data: activity,
     }
     res.send(rsp);
   });
@@ -417,7 +542,7 @@ function enrollActivityAjax(req, res) {
         openId: req.session.fetchWechatUserInfo.openid,
         wechatNickName: req.session.fetchWechatUserInfo.nickname,
         headimgurl: req.session.fetchWechatUserInfo.headimgurl,
-        confirmTime: activity.activityConfirmSwitch ? new Date() : null,
+        confirmTime: activity.activityConfirmSwitch ? null : new Date(),
         enrollPrice: 0,
       }), function() {
         res.send(rsp);
@@ -556,6 +681,7 @@ function enrollQrcode(req, res) {
 
 function initialApply(options) {
   return {
+    _id: new ObjectId(),
     unionId: options.unionId,
     openId: options.openId,
     status: options.status,
@@ -651,7 +777,7 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
                         unionId: response.data.unionid,
                         wechatNickName: response.data.nickname,
                         headimgurl: response.data.headimgurl,
-                        confirmTime: activity.activityConfirmSwitch ? new Date() : null,
+                        confirmTime: activity.activityConfirmSwitch ? null : new Date(),
                         enrollPrice: 0,
                       }), function() {
                         res.reply([{
@@ -701,18 +827,18 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
     });
   }
   // res.send('<xml><return_code><![CDATA[SUCCESS]]></return_code><return_msg><![CDATA[OK]]></return_msg></xml>');
-  if (message.MsgType == 'event' && message.Event == 'SCAN') {
+  if (message.MsgType == 'event' && message.Event == 'SCAN' && message.EventKey) {
     procSubsribeNotify()
-  } else if (message.MsgType == 'event' && message.Event == 'subscribe') {
+  } else if (message.MsgType == 'event' && message.Event == 'subscribe' && message.EventKey) {
     procSubsribeNotify()
   } else {
     res.send('');
   }
 }));
 
-function transferAndRecord(transferInfo, callback) {
+function transferAndLog(transferInfo, callback) {
   var insertData = {
-    collection: 'transferLogs',
+    collection: 'logTransfers',
     documents: [{
       transferInfo: transferInfo
     }]
@@ -721,12 +847,26 @@ function transferAndRecord(transferInfo, callback) {
     transferInfo.partner_trade_no = insertResult.ops[0]._id.toString()
     let transferResult = await weixin_pay_api.transfers(transferInfo);
     logger.debug('transferResult', transferResult)
-    mo.updateOne('transferLogs', { _id: insertResult.ops[0]._id }, {
+    mo.updateOne('logTransfers', { _id: insertResult.ops[0]._id }, {
       $set: { transferResult: transferResult }
     }, function(updateResult) {
-      callback(updateResult)
+      if (callback) {
+        callback(updateResult)
+      }
     })
   })
+}
+
+function logPay(payInfo, options) {
+  var insertData = {
+    collection: 'logPays',
+    documents: [{
+      payInfo: payInfo,
+      payType: options.payType,
+      payKey: options.payKey,
+    }]
+  }
+  mo.insertDocuments(insertData, function(insertResult) {})
 }
 
 app.use(bodyParser.text({ type: '*/xml' }));
@@ -742,28 +882,32 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
           var schedulePayDateTime = (new Date(activity.activityDateTime)).getTime() - 86400000 * activity.confirmDayCount
           var amount = 0
           var payToFounderSchedule = null
-          if (schedulePayDateTime < Date.now() && !activity.activityConfirmSwitch) {
-            var payToFounderStatus = 'payed'
-            if (info.total_fee == 100 * unifiedOrder.enrollPrice * unifiedOrder.enrollNumber) {
-              if (info.total_fee >= 100) {
-                amount = info.total_fee * (1 - globalInfo.config.payRatio)
-                if (amount < 100) {
-                  amount = 100
-                }
-                var transferInfo = {
-                  openid: activity.founderOpenId,
-                  amount: amount,
-                  desc: unifiedOrder.displayNickName + '支付的' + activity.activityTitle + '活动费用',
-                  check_name: 'NO_CHECK',
-                }
-                transferAndRecord(transferInfo)
+          if (info.total_fee == 100 * unifiedOrder.enrollPrice * unifiedOrder.enrollNumber) {
+            if (info.total_fee >= 100) {
+              amount = info.total_fee * (1 - globalInfo.config.payRatio)
+              if (amount < 100) {
+                amount = 100
               }
             }
+          }
+          if (amount < 100) {
+            logger.error('transfer amount less 100', unifiedOrder._id)
+            return
+          }
+          if (schedulePayDateTime < Date.now() && !activity.activityConfirmSwitch) {
+            var payToFounderStatus = 'payed'
+            var transferInfo = {
+              openid: activity.founderOpenId,
+              amount: amount,
+              desc: unifiedOrder.displayNickName + '支付的' + activity.activityTitle + '活动费用',
+              check_name: 'NO_CHECK',
+            }
+            transferAndLog(transferInfo)
           } else {
             var payToFounderStatus = 'wait'
             payToFounderSchedule = new Date(schedulePayDateTime)
           }
-          enrollActivity(activity, initialApply({
+          var apply = initialApply({
             status: activity.activityConfirmSwitch ? 'wait' : 'pass',
             displayNickName: unifiedOrder.displayNickName,
             enrollNumber: unifiedOrder.enrollNumber,
@@ -771,20 +915,27 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
             openId: unifiedOrder.wechatUserInfo.openid,
             wechatNickName: unifiedOrder.wechatUserInfo.nickname,
             headimgurl: unifiedOrder.wechatUserInfo.headimgurl,
-            confirmTime: activity.activityConfirmSwitch ? new Date() : null,
+            confirmTime: activity.activityConfirmSwitch ? null : new Date(),
             enrollPrice: unifiedOrder.enrollPrice,
             payToFounderStatus: payToFounderStatus,
             payToFounderDateTime: payToFounderStatus == 'payed' ? new Date() : null,
             payToFounderAmount: amount,
             payToFounderSchedule: payToFounderSchedule ? payToFounderSchedule : null
-          }), function() {
+          })
+          logPay(info, {
+            payType: 'apply',
+            payKey: apply._id
+          })
+          enrollActivity(activity, apply, function() {
             mo.updateOne('unifiedOrders', { _id: unifiedOrder._id }, {
               $set: { payProcess: 'done' }
             }, function(result) {
 
             })
           })
-        } else {}
+        } else {
+          //已经存在申请，修改报名的逻辑
+        }
       })
     }
   });
@@ -802,6 +953,8 @@ app.get(CONFIG.DIR_FIRST + '/ajax/getActivity', getActivity);
 app.post(CONFIG.DIR_FIRST + '/ajax/enrollActivity', jsonParser, enrollActivityAjax);
 app.post(CONFIG.DIR_FIRST + '/ajax/enrollQrcode', jsonParser, enrollQrcode);
 app.post(CONFIG.DIR_FIRST + '/ajax/createActivity', jsonParser, createActivity);
+app.post(CONFIG.DIR_FIRST + '/ajax/confirmApply', jsonParser, confirmApply);
+app.post(CONFIG.DIR_FIRST + '/ajax/delApply', jsonParser, delApply);
 // app.post(CONFIG.DIR_FIRST + '/ajInterface', xmlparser({
 //   trim: false,
 //   explicitArray: false
