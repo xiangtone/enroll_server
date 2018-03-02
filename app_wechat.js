@@ -450,36 +450,105 @@ function formatApply(req) {
   }
 }
 
+function refundApply(apply, callback) {
+  mo.findOneDocumentByFilter('logPays', { payKey: apply._id, status: 'payed' }, null, async function(logPay) {
+    if (logPay) {
+      var out_refund_no = new ObjectId()
+      let refundResult = await weixin_pay_api.refund({
+        // transaction_id, out_trade_no 二选一
+        // transaction_id: '微信的订单号',
+        out_trade_no: logPay.payInfo.out_trade_no,
+        out_refund_no: out_refund_no.toString(),
+        total_fee: logPay.payInfo.total_fee,
+        refund_fee: logPay.payInfo.total_fee,
+      });
+      mo.insertDocuments({
+        collection: 'logRefund',
+        documents: [{
+          _id: out_refund_no,
+          refundResult: refundResult,
+          reason: 'founder cancel'
+        }]
+      }, function(insertDocuments) {})
+      mo.updateOne('logPays', {
+        _id: logPay._id
+      }, { $set: { status: 'refund' } }, function(updateDocs) {
+        callback()
+      })
+    }
+  })
+}
+
 function delApply(req, res) {
 
-  function del(targetApply) {
+  function sendOk() {
+    res.send({
+      status: 'ok',
+    })
+  }
+
+  function del(targetApply, callback) {
     mo.updateOne('activitys', {
       _id: new ObjectId(req.body.activity_id),
     }, { $pull: { applys: targetApply } }, function() {
-      res.send({
-        status: 'ok',
+      mo.updateOne('activitys', {
+        _id: new ObjectId(req.body.activity_id),
+      }, { $push: { delApplys: targetApply } }, function() {
+        callback()
       })
     })
   }
   var targetI = -1
-  logger.debug('delApply', req.body)
+  var currentTime = new Date()
   mo.findOneDocumentById('activitys', req.body.activity_id, function(activity) {
     if (checkFounderSession(activity, req)) {
       for (var i = 1; i < activity.applys.length; i++) {
         if (req.body.applyId == activity.applys[i]._id.toString()) {
-          logger.debug('_id', req.body.applyId, i)
+          async function insertUnifiedOrderCallback(insertedUnifiedOrder) {
+            if (insertedUnifiedOrder.result.ok == 1) {
+              try {
+                let unifiedOrder = await weixin_pay_api.unifiedOrder({
+                  out_trade_no: insertedUnifiedOrder.ops[0]._id.toString(),
+                  body: '退回' + activity.applys[i].displayNickName + '参加' + activity.title + '的费用',
+                  total_fee: activity.applys[i].payToFounderAmount,
+                  openid: req.session.fetchWechatUserInfo.openid,
+                  // notify_url: 'https://' + CONFIG.DOMAIN + '/' + CONFIG.PAY_DIR_FIRST + insertedUnifiedOrder.ops[0]._id.toString(),
+                });
+                let resultForJsapi = await weixin_pay_api.getPayParamsByPrepay({
+                  prepay_id: unifiedOrder.prepay_id
+                });
+                var rsp = { status: 'ok', type: 'unifiedOrder', data: resultForJsapi }
+                res.send(rsp);
+              } catch (e) {
+                logger.error(e.name + ": " + e.message);
+                logger.error(e.stack);
+              }
+            }
+          }
           targetI = i
           if (activity.applys[i].enrollPrice == 0) {
-            del(activity.applys[i])
-          } else if (activity.applys[i].payToFounderStatus == 'wait' && activity.applys[i].payToFounderSchedule < currentTime && !activity.applys[i].payToFounderDateTime) {
-            var transferInfo = {
-              openid: activity.founderOpenId,
-              amount: activity.applys[i].payToFounderAmount,
-              desc: activity.applys[i].displayNickName + '支付的' + activity.activityTitle + '活动费用',
-              check_name: 'NO_CHECK',
+            del(activity.applys[i], sendOk)
+          } else if (activity.applys[i].payToFounderStatus == 'wait' && activity.applys[i].payToFounderSchedule > currentTime && !activity.applys[i].payToFounderDateTime) {
+            logger.debug('enter refund process')
+            refundApply(activity.applys[i], function() {
+              del(activity.applys[i], sendOk)
+            })
+          } else if (activity.applys[i].payToFounderStatus == 'payed' && activity.applys[i].payToFounderDateTime && activity.applys[i].payToFounderAmount >= 100) {
+            //拉起支付
+            var insertUnifiedOrderData = {
+              collection: 'unifiedOrders',
+              documents: [{
+                activityId: req.body.activity_id,
+                wechatUserInfo: req.session.fetchWechatUserInfo,
+                expiredTime: new Date(Date.now() + 86400 * 1000 * 3),
+                payProcess: 'wait',
+                type: 'delApplyRefund',
+                applyId: activity.applys[i]._id
+              }]
             }
+            mo.insertDocuments(insertUnifiedOrderData, insertUnifiedOrderCallback)
           } else {
-            del(activity.applys[i])
+            del(activity.applys[i], sendOk)
           }
           break;
         }
@@ -500,7 +569,6 @@ function delApply(req, res) {
 }
 
 function checkFounderSession(activity, req) {
-
   if (activity.applyTime) {
     activity.applyTime = new Date(activity.applyTime)
   }
@@ -554,7 +622,7 @@ function enrollActivityAjax(req, res) {
         try {
           let unifiedOrder = await weixin_pay_api.unifiedOrder({
             out_trade_no: insertedUnifiedOrder.ops[0]._id.toString(),
-            body: '断舍离-活动费用',
+            body: '参加' + activity.founderNickName + '组织的' + activity.title + '的费用',
             total_fee: 100 * activity.enrollPrice * req.body.enrollNumber,
             openid: req.session.fetchWechatUserInfo.openid,
             // notify_url: 'https://' + CONFIG.DOMAIN + '/' + CONFIG.PAY_DIR_FIRST + insertedUnifiedOrder.ops[0]._id.toString(),
@@ -593,6 +661,7 @@ function enrollActivityAjax(req, res) {
             expiredTime: new Date(Date.now() + 86400 * 1000 * 3),
             payProcess: 'wait',
             displayNickName: req.body.displayNickName,
+            type: 'enroll',
           }]
         }
         mo.insertDocuments(insertUnifiedOrderData, insertUnifiedOrderCallback)
@@ -845,6 +914,7 @@ function transferAndLog(transferInfo, callback) {
   }
   mo.insertDocuments(insertData, async function(insertResult) {
     transferInfo.partner_trade_no = insertResult.ops[0]._id.toString()
+    logger.debug('transferInfo', transferInfo)
     let transferResult = await weixin_pay_api.transfers(transferInfo);
     logger.debug('transferResult', transferResult)
     mo.updateOne('logTransfers', { _id: insertResult.ops[0]._id }, {
@@ -864,6 +934,7 @@ function logPay(payInfo, options) {
       payInfo: payInfo,
       payType: options.payType,
       payKey: options.payKey,
+      status: 'payed'
     }]
   }
   mo.insertDocuments(insertData, function(insertResult) {})
@@ -877,64 +948,72 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
   mo.findOneDocumentById('unifiedOrders', info.out_trade_no, function(unifiedOrder) {
     if (unifiedOrder && unifiedOrder.payProcess && unifiedOrder.payProcess == 'wait') {
       mo.findOneDocumentById('activitys', unifiedOrder.activityId, function(activity) {
-        var applyArray = checkEnrolled(unifiedOrder.wechatUserInfo.unionid, activity.applys)
-        if (applyArray.length == 0) {
-          var schedulePayDateTime = (new Date(activity.activityDateTime)).getTime() - 86400000 * activity.confirmDayCount
-          var amount = 0
-          var payToFounderSchedule = null
-          if (info.total_fee == 100 * unifiedOrder.enrollPrice * unifiedOrder.enrollNumber) {
-            if (info.total_fee >= 100) {
-              amount = info.total_fee * (1 - globalInfo.config.payRatio)
-              if (amount < 100) {
-                amount = 100
+        function processEnroll() {
+          var applyArray = checkEnrolled(unifiedOrder.wechatUserInfo.unionid, activity.applys)
+          if (applyArray.length == 0) {
+            var schedulePayDateTime = (new Date(activity.activityDateTime)).getTime() - 86400000 * activity.confirmDayCount
+            var amount = 0
+            var payToFounderSchedule = null
+            if (info.total_fee == 100 * unifiedOrder.enrollPrice * unifiedOrder.enrollNumber) {
+              if (info.total_fee >= 100) {
+                amount = Math.floor(info.total_fee * (1 - globalInfo.config.payRatio))
+                if (amount < 100) {
+                  amount = 100
+                }
               }
             }
-          }
-          if (amount < 100) {
-            logger.error('transfer amount less 100', unifiedOrder._id)
-            return
-          }
-          if (schedulePayDateTime < Date.now() && !activity.activityConfirmSwitch) {
-            var payToFounderStatus = 'payed'
-            var transferInfo = {
-              openid: activity.founderOpenId,
-              amount: amount,
-              desc: unifiedOrder.displayNickName + '支付的' + activity.activityTitle + '活动费用',
-              check_name: 'NO_CHECK',
+            if (amount < 100) {
+              logger.error('transfer amount less 100', unifiedOrder._id)
+              return
             }
-            transferAndLog(transferInfo)
-          } else {
-            var payToFounderStatus = 'wait'
-            payToFounderSchedule = new Date(schedulePayDateTime)
-          }
-          var apply = initialApply({
-            status: activity.activityConfirmSwitch ? 'wait' : 'pass',
-            displayNickName: unifiedOrder.displayNickName,
-            enrollNumber: unifiedOrder.enrollNumber,
-            unionId: unifiedOrder.wechatUserInfo.unionid,
-            openId: unifiedOrder.wechatUserInfo.openid,
-            wechatNickName: unifiedOrder.wechatUserInfo.nickname,
-            headimgurl: unifiedOrder.wechatUserInfo.headimgurl,
-            confirmTime: activity.activityConfirmSwitch ? null : new Date(),
-            enrollPrice: unifiedOrder.enrollPrice,
-            payToFounderStatus: payToFounderStatus,
-            payToFounderDateTime: payToFounderStatus == 'payed' ? new Date() : null,
-            payToFounderAmount: amount,
-            payToFounderSchedule: payToFounderSchedule ? payToFounderSchedule : null
-          })
-          logPay(info, {
-            payType: 'apply',
-            payKey: apply._id
-          })
-          enrollActivity(activity, apply, function() {
-            mo.updateOne('unifiedOrders', { _id: unifiedOrder._id }, {
-              $set: { payProcess: 'done' }
-            }, function(result) {
-
+            if (schedulePayDateTime < Date.now() && !activity.activityConfirmSwitch) {
+              var payToFounderStatus = 'payed'
+              var transferInfo = {
+                openid: activity.founderOpenId,
+                amount: amount,
+                desc: unifiedOrder.displayNickName + '支付的' + activity.activityTitle + '活动费用',
+                check_name: 'NO_CHECK',
+              }
+              transferAndLog(transferInfo)
+            } else {
+              var payToFounderStatus = 'wait'
+              payToFounderSchedule = new Date(schedulePayDateTime)
+            }
+            var apply = initialApply({
+              status: activity.activityConfirmSwitch ? 'wait' : 'pass',
+              displayNickName: unifiedOrder.displayNickName,
+              enrollNumber: unifiedOrder.enrollNumber,
+              unionId: unifiedOrder.wechatUserInfo.unionid,
+              openId: unifiedOrder.wechatUserInfo.openid,
+              wechatNickName: unifiedOrder.wechatUserInfo.nickname,
+              headimgurl: unifiedOrder.wechatUserInfo.headimgurl,
+              confirmTime: activity.activityConfirmSwitch ? null : new Date(),
+              enrollPrice: unifiedOrder.enrollPrice,
+              payToFounderStatus: payToFounderStatus,
+              payToFounderDateTime: payToFounderStatus == 'payed' ? new Date() : null,
+              payToFounderAmount: amount,
+              payToFounderSchedule: payToFounderSchedule ? payToFounderSchedule : null
             })
-          })
-        } else {
-          //已经存在申请，修改报名的逻辑
+            logPay(info, {
+              payType: 'apply',
+              payKey: apply._id
+            })
+            enrollActivity(activity, apply, function() {
+              mo.updateOne('unifiedOrders', { _id: unifiedOrder._id }, {
+                $set: { payProcess: 'done' }
+              }, function(result) {
+
+              })
+            })
+          } else {
+            //已经存在申请，修改报名的逻辑
+          }
+        }
+
+        if (unifiedOrder.type == 'enroll') {
+          processEnroll()
+        } else if (unifiedOrder.type == 'delApplyRefund') {
+
         }
       })
     }
