@@ -452,6 +452,7 @@ function formatApply(req) {
 
 function refundApply(apply, callback) {
   mo.findOneDocumentByFilter('logPays', { payKey: apply._id, status: 'payed' }, null, async function(logPay) {
+    logger.debug('logPay', logPay)
     if (logPay) {
       var out_refund_no = new ObjectId()
       let refundResult = await weixin_pay_api.refund({
@@ -463,7 +464,7 @@ function refundApply(apply, callback) {
         refund_fee: logPay.payInfo.total_fee,
       });
       mo.insertDocuments({
-        collection: 'logRefund',
+        collection: 'logRefunds',
         documents: [{
           _id: out_refund_no,
           refundResult: refundResult,
@@ -479,6 +480,18 @@ function refundApply(apply, callback) {
   })
 }
 
+function delApplyFromActivity(options, callback) {
+  mo.updateOne('activitys', {
+    _id: new ObjectId(options.activityId),
+  }, { $pull: { applys: options.targetApply } }, function() {
+    mo.updateOne('activitys', {
+      _id: new ObjectId(options.activityId),
+    }, { $push: { delApplys: options.targetApply } }, function() {
+      callback()
+    })
+  })
+}
+
 function delApply(req, res) {
 
   function sendOk() {
@@ -487,17 +500,7 @@ function delApply(req, res) {
     })
   }
 
-  function del(targetApply, callback) {
-    mo.updateOne('activitys', {
-      _id: new ObjectId(req.body.activity_id),
-    }, { $pull: { applys: targetApply } }, function() {
-      mo.updateOne('activitys', {
-        _id: new ObjectId(req.body.activity_id),
-      }, { $push: { delApplys: targetApply } }, function() {
-        callback()
-      })
-    })
-  }
+
   var targetI = -1
   var currentTime = new Date()
   mo.findOneDocumentById('activitys', req.body.activity_id, function(activity) {
@@ -527,11 +530,17 @@ function delApply(req, res) {
           }
           targetI = i
           if (activity.applys[i].enrollPrice == 0) {
-            del(activity.applys[i], sendOk)
+            delApplyFromActivity({
+              activityId: activity._id.toString(),
+              targetApply: activity.applys[i]
+            }, sendOk)
           } else if (activity.applys[i].payToFounderStatus == 'wait' && activity.applys[i].payToFounderSchedule > currentTime && !activity.applys[i].payToFounderDateTime) {
             logger.debug('enter refund process')
             refundApply(activity.applys[i], function() {
-              del(activity.applys[i], sendOk)
+              delApplyFromActivity({
+                activityId: activity._id.toString(),
+                targetApply: activity.applys[i]
+              }, sendOk)
             })
           } else if (activity.applys[i].payToFounderStatus == 'payed' && activity.applys[i].payToFounderDateTime && activity.applys[i].payToFounderAmount >= 100) {
             //拉起支付
@@ -548,7 +557,10 @@ function delApply(req, res) {
             }
             mo.insertDocuments(insertUnifiedOrderData, insertUnifiedOrderCallback)
           } else {
-            del(activity.applys[i], sendOk)
+            delApplyFromActivity({
+              activityId: activity._id.toString(),
+              targetApply: activity.applys[i]
+            }, sendOk)
           }
           break;
         }
@@ -1010,10 +1022,28 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
           }
         }
 
+        function processDel() {
+          for (var i = 1; i < activity.applys.length; i++) {
+            if (unifiedOrder.applyId.toString() == activity.applys[i]._id.toString()) {
+              refundApply(activity.applys[i], function() {
+                delApplyFromActivity({
+                  activityId: activity._id.toString(),
+                  targetApply: activity.applys[i]
+                }, function() {
+                  mo.updateOne('unifiedOrders', { _id: unifiedOrder._id }, {
+                    $set: { payProcess: 'done' }
+                  }, function(result) {})
+                })
+              })
+              break
+            }
+          }
+        }
+
         if (unifiedOrder.type == 'enroll') {
           processEnroll()
         } else if (unifiedOrder.type == 'delApplyRefund') {
-
+          processDel()
         }
       })
     }
