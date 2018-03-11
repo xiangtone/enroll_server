@@ -137,9 +137,9 @@ const weixin_pay_api = new tenpay(configTenPay);
 app.use(function(req, res, next) {
   var isNext = true;
   var ctimeSecond = new Date().getTime() / 1000
-  if (req.url.indexOf('\/page\/') != -1 && req.url.indexOf('.js') == -1 && req.url.indexOf('.css') == -1) {
+  if (req.url.indexOf('\/ajwechatLogin') != -1 && req.url.indexOf('.js') == -1 && req.url.indexOf('.css') == -1) {
     if (checkWechatHeader()) {
-      if (req.query.code) {
+      if (req.query.code && req.query.state) {
         isNext = false
         oAuthBaseProcess(req.query.code)
       } else {
@@ -179,6 +179,7 @@ app.use(function(req, res, next) {
   function toWechatOauth(scope) {
     // var urlEncodedUrl = encodeURIComponent(req.protocol + '://' + req.hostname + req.url)
     var urlEncodedUrl = encodeURIComponent('https://' + req.hostname + req.url)
+    logger.debug('urlEncodedUrl', urlEncodedUrl)
     var oAuthUrl = 'https://open.weixin.qq.com/connect/oauth2/authorize?appid=' + CONFIG.WECHAT.APPID + '&redirect_uri=' + urlEncodedUrl + '&response_type=code&scope=' + scope + '&state=123#wechat_redirect'
     isNext = false
     return res.send('<script>location="' + oAuthUrl + '"</script>')
@@ -304,18 +305,35 @@ app.use(function(req, res, next) {
   };
 
   function redirectAfterOAuthSuccess() {
-    var target = pu.cleanedUrl(req)
-    if (target.indexOf('f=') == -1) {
-      if (target.indexOf('?') == -1) {
-        target += '?f=' + req.session.fetchWechatUserInfo.unionid
+    mo.findOneDocumentById('logHrefs', req.query.state, function(docHref) {
+      if (docHref) {
+        res.send('<script>location="' + docHref.href + '"</script>')
       } else {
-        target += '&f=' + req.session.fetchWechatUserInfo.unionid
+        res.send('error on get href from logs')
       }
-    }
-    return res.send('<script>location="' + target + '"</script>')
+    })
     // return res.redirect(target);
   }
 })
+
+
+function hrefRecord(req, res) {
+  mo.insertDocuments({
+    collection: 'logHrefs',
+    documents: [{
+      href: req.body.href,
+      expiredTime: new Date(Date.now() + 60 * 1000 * 3),
+    }]
+  }, function(insertedHref) {
+    if (insertedHref.result.ok == 1) {
+      res.send({
+        status: 'ok',
+        state: insertedHref.ops[0]._id,
+        loginUrl: encodeURIComponent('https://' + req.hostname + '/' + CONFIG.DIR_FIRST + '/ajwechatLogin')
+      })
+    }
+  })
+}
 
 app.use(express.static(path.join(__dirname, 'static')));
 
@@ -484,6 +502,7 @@ function delApplyFromActivity(options, callback) {
   mo.updateOne('activitys', {
     _id: new ObjectId(options.activityId),
   }, { $pull: { applys: options.targetApply } }, function() {
+    options.targetApply.reason = options.reason
     mo.updateOne('activitys', {
       _id: new ObjectId(options.activityId),
     }, { $push: { delApplys: options.targetApply } }, function() {
@@ -492,6 +511,51 @@ function delApplyFromActivity(options, callback) {
   })
 }
 
+function cancelEnrollByCustomer(req, res) {
+  mo.findOneDocumentById('activitys', req.body.activity_id, function(activity) {
+    if (activity) {
+      if (checkFounderSession(activity, req)) {
+        res.send({ status: 'error', msg: 'founder can not cancel' })
+      } else {
+        var rsp = { status: 'ok' }
+        for (var i = 1; i < activity.applys.length; i++) {
+          if (req.session.fetchWechatUserInfo.unionid == activity.applys[i].unionId) {
+            if (activity.applys[i].enrollPrice == 0) {
+              delApplyFromActivity({
+                activityId: activity._id.toString(),
+                targetApply: activity.applys[i],
+                reason: 'customer cancel',
+              }, function() {})
+            } else if (activity.applys[i].payToFounderStatus == 'wait' && activity.applys[i].payToFounderSchedule > currentTime && !activity.applys[i].payToFounderDateTime) {
+              logger.debug('enter refund process')
+              refundApply(activity.applys[i], function() {
+                delApplyFromActivity({
+                  activityId: activity._id.toString(),
+                  targetApply: activity.applys[i],
+                  reason: 'customer cancel',
+                }, function() {})
+              })
+            } else if (activity.applys[i].payToFounderStatus == 'payed' && activity.applys[i].payToFounderDateTime && activity.applys[i].payToFounderAmount >= 100) {
+              rsp = { status: 'error', msg: '费用已经支付给活动组织者，需要组织者处理退费' }
+            } else {
+              delApplyFromActivity({
+                activityId: activity._id.toString(),
+                targetApply: activity.applys[i],
+                reason: 'customer cancel',
+              }, function() {})
+            }
+          }
+        }
+        res.send(rsp)
+      }
+    } else {
+      res.send({ status: 'error', msg: 'activity is not exist' })
+    }
+  })
+}
+
+
+
 function delApply(req, res) {
 
   function sendOk() {
@@ -499,7 +563,6 @@ function delApply(req, res) {
       status: 'ok',
     })
   }
-
 
   var targetI = -1
   var currentTime = new Date()
@@ -532,14 +595,16 @@ function delApply(req, res) {
           if (activity.applys[i].enrollPrice == 0) {
             delApplyFromActivity({
               activityId: activity._id.toString(),
-              targetApply: activity.applys[i]
+              targetApply: activity.applys[i],
+              reason: 'founder delete',
             }, sendOk)
           } else if (activity.applys[i].payToFounderStatus == 'wait' && activity.applys[i].payToFounderSchedule > currentTime && !activity.applys[i].payToFounderDateTime) {
             logger.debug('enter refund process')
             refundApply(activity.applys[i], function() {
               delApplyFromActivity({
                 activityId: activity._id.toString(),
-                targetApply: activity.applys[i]
+                targetApply: activity.applys[i],
+                reason: 'founder delete',
               }, sendOk)
             })
           } else if (activity.applys[i].payToFounderStatus == 'payed' && activity.applys[i].payToFounderDateTime && activity.applys[i].payToFounderAmount >= 100) {
@@ -559,7 +624,8 @@ function delApply(req, res) {
           } else {
             delApplyFromActivity({
               activityId: activity._id.toString(),
-              targetApply: activity.applys[i]
+              targetApply: activity.applys[i],
+              reason: 'founder delete',
             }, sendOk)
           }
           break;
@@ -599,6 +665,13 @@ function getActivity(req, res) {
     }
     res.send(rsp);
   });
+}
+
+function wechatLogin(req, res) {
+  var rsp = {
+    status: 'ok',
+  }
+  res.send(rsp);
 }
 
 function enrollActivity(activity, apply, callback) {
@@ -1028,7 +1101,8 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
               refundApply(activity.applys[i], function() {
                 delApplyFromActivity({
                   activityId: activity._id.toString(),
-                  targetApply: activity.applys[i]
+                  targetApply: activity.applys[i],
+                  reason: 'founder delete',
                 }, function() {
                   mo.updateOne('unifiedOrders', { _id: unifiedOrder._id }, {
                     $set: { payProcess: 'done' }
@@ -1057,13 +1131,16 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
 });
 
 app.get(CONFIG.DIR_FIRST + '/ajaxPub/signWechat', signOutWithAjax);
-app.get(CONFIG.DIR_FIRST + '/ajax/page/getSession', getSession);
+app.get(CONFIG.DIR_FIRST + '/ajax/index.html', getSession);
 app.get(CONFIG.DIR_FIRST + '/ajax/getActivity', getActivity);
+app.get(CONFIG.DIR_FIRST + '/ajwechatLogin', wechatLogin);
 app.post(CONFIG.DIR_FIRST + '/ajax/enrollActivity', jsonParser, enrollActivityAjax);
 app.post(CONFIG.DIR_FIRST + '/ajax/enrollQrcode', jsonParser, enrollQrcode);
 app.post(CONFIG.DIR_FIRST + '/ajax/createActivity', jsonParser, createActivity);
 app.post(CONFIG.DIR_FIRST + '/ajax/confirmApply', jsonParser, confirmApply);
 app.post(CONFIG.DIR_FIRST + '/ajax/delApply', jsonParser, delApply);
+app.post(CONFIG.DIR_FIRST + '/ajhrefRecord', jsonParser, hrefRecord);
+app.post(CONFIG.DIR_FIRST + '/ajax/cancelEnrollByCustomer', jsonParser, cancelEnrollByCustomer);
 // app.post(CONFIG.DIR_FIRST + '/ajInterface', xmlparser({
 //   trim: false,
 //   explicitArray: false
