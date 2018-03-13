@@ -756,18 +756,34 @@ function enrollActivityAjax(req, res) {
 }
 
 function enrollQrcode(req, res) {
+  function errorRsp(msg) {
+    logger.error('enrollQrcode on process', msg)
+    var rsp = {
+      status: 'error',
+      msg: msg
+    }
+    res.send(rsp)
+  }
+  var rsp = {}
+
+  function successRsp() {
+    req.session.destroy(function(err) {
+      logger.debug('enrollQrcode successRsp destroy session', err)
+      res.send(rsp);
+    })
+  }
   mo.findOneDocumentByFilter('qrcodes', {
     'act': 'enroll',
     'activityId': req.body.activityId,
     'from': req.body.from,
   }, { sort: { '_id': -1 } }, function(result) {
     if (result) {
-      var rsp = {
+      rsp = {
         status: 'ok',
         ticket: result.ticket,
         url: result.url
       }
-      res.send(rsp);
+      successRsp()
     } else {
       const insertData = {
         collection: 'qrcodes',
@@ -798,12 +814,12 @@ function enrollQrcode(req, res) {
                   }
                 }, function(result) {
                   if (result.result.ok == 1) {
-                    var rsp = {
+                    rsp = {
                       status: 'ok',
                       ticket: response.data.ticket,
                       url: response.data.url
                     }
-                    res.send(rsp);
+                    successRsp()
                   } else {
                     errorRsp('enrollQrcode update mongodb error')
                   }
@@ -823,14 +839,7 @@ function enrollQrcode(req, res) {
     }
   });
 
-  function errorRsp(msg) {
-    logger.error('enrollQrcode on process', msg)
-    var rsp = {
-      status: 'error',
-      msg: msg
-    }
-    res.send(rsp)
-  }
+
 }
 
 function initialApply(options) {
@@ -907,12 +916,13 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
   // 微信输入信息都在req.weixin上
   var message = req.weixin;
   logger.debug(message)
+  var eventKey = message.EventKey
 
   function procSubsribeNotify() {
     var ctimeSecond = new Date().getTime() / 1000
     var resp = ''
 
-    mo.findOneDocumentById('qrcodes', message.EventKey, function(qrcode) {
+    mo.findOneDocumentById('qrcodes', eventKey, function(qrcode) {
       if (qrcode) {
         mo.findOneDocumentById('activitys', qrcode.activityId, function(activity) {
           if (activity) {
@@ -984,6 +994,7 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
   if (message.MsgType == 'event' && message.Event == 'SCAN' && message.EventKey) {
     procSubsribeNotify()
   } else if (message.MsgType == 'event' && message.Event == 'subscribe' && message.EventKey) {
+    eventKey = message.EventKey.split('_')[1]
     procSubsribeNotify()
   } else {
     res.send('');
