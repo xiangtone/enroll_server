@@ -44,7 +44,7 @@ const configTenPay = {
   appid: CONFIG.WECHAT.APPID,
   mchid: CONFIG.WXPAY.MCH_ID,
   partnerKey: CONFIG.WXPAY.PARTNER_KEY,
-  pfx: require('fs').readFileSync('./key_weixin_pay.p12'),
+  pfx: require('fs').readFileSync('./key_weixin_pay_' + CONFIG.WXPAY.MCH_ID + '.p12'),
   notify_url: 'https://' + CONFIG.DOMAIN + '/' + CONFIG.PAY_DIR_FIRST,
   spbill_create_ip: '127.0.0.1'
 };
@@ -470,7 +470,6 @@ function formatApply(req) {
 
 function refundApply(apply, callback) {
   mo.findOneDocumentByFilter('logPays', { payKey: apply._id, status: 'payed' }, null, async function(logPay) {
-    logger.debug('logPay', logPay)
     if (logPay) {
       var out_refund_no = new ObjectId()
       let refundResult = await weixin_pay_api.refund({
@@ -499,52 +498,62 @@ function refundApply(apply, callback) {
 }
 
 function delApplyFromActivity(options, callback) {
+  logger.debug('delApplyFromActivity', options)
+  var targetApply = options.targetApply
   mo.updateOne('activitys', {
     _id: new ObjectId(options.activityId),
   }, { $pull: { applys: options.targetApply } }, function() {
+    logger.debug('delApplyFromActivity callback', options)
+    targetApply.reason = options.reason
     options.targetApply.reason = options.reason
     mo.updateOne('activitys', {
       _id: new ObjectId(options.activityId),
-    }, { $push: { delApplys: options.targetApply } }, function() {
+    }, { $push: { delApplys: targetApply } }, function() {
       callback()
     })
   })
 }
 
 function cancelEnrollByCustomer(req, res) {
-  mo.findOneDocumentById('activitys', req.body.activity_id, function(activity) {
+  var currentTime = new Date()
+  var rsp = { status: 'ok' }
+
+
+  mo.findOneDocumentById('activitys', req.body.activityId, function(activity) {
     if (activity) {
+      function processApply(apply) {
+        if (req.session.fetchWechatUserInfo.unionid == apply.unionId) {
+          if (apply.enrollPrice == 0) {
+            delApplyFromActivity({
+              activityId: activity._id.toString(),
+              targetApply: apply,
+              reason: 'customer cancel',
+            }, function() {})
+          } else if (apply.payToFounderStatus == 'wait' && apply.payToFounderSchedule > currentTime && !apply.payToFounderDateTime) {
+            logger.debug('enter refund process')
+            refundApply(apply, function() {
+              delApplyFromActivity({
+                activityId: activity._id.toString(),
+                targetApply: apply,
+                reason: 'customer cancel',
+              }, function() {})
+            })
+          } else if (apply.payToFounderStatus == 'payed' && apply.payToFounderDateTime && apply.payToFounderAmount >= 100) {
+            rsp = { status: 'error', msg: '费用已经支付给活动组织者，需要组织者在管理中退费' }
+          } else {
+            delApplyFromActivity({
+              activityId: activity._id.toString(),
+              targetApply: apply,
+              reason: 'customer cancel',
+            }, function() {})
+          }
+        }
+      }
       if (checkFounderSession(activity, req)) {
         res.send({ status: 'error', msg: 'founder can not cancel' })
       } else {
-        var rsp = { status: 'ok' }
         for (var i = 1; i < activity.applys.length; i++) {
-          if (req.session.fetchWechatUserInfo.unionid == activity.applys[i].unionId) {
-            if (activity.applys[i].enrollPrice == 0) {
-              delApplyFromActivity({
-                activityId: activity._id.toString(),
-                targetApply: activity.applys[i],
-                reason: 'customer cancel',
-              }, function() {})
-            } else if (activity.applys[i].payToFounderStatus == 'wait' && activity.applys[i].payToFounderSchedule > currentTime && !activity.applys[i].payToFounderDateTime) {
-              logger.debug('enter refund process')
-              refundApply(activity.applys[i], function() {
-                delApplyFromActivity({
-                  activityId: activity._id.toString(),
-                  targetApply: activity.applys[i],
-                  reason: 'customer cancel',
-                }, function() {})
-              })
-            } else if (activity.applys[i].payToFounderStatus == 'payed' && activity.applys[i].payToFounderDateTime && activity.applys[i].payToFounderAmount >= 100) {
-              rsp = { status: 'error', msg: '费用已经支付给活动组织者，需要组织者处理退费' }
-            } else {
-              delApplyFromActivity({
-                activityId: activity._id.toString(),
-                targetApply: activity.applys[i],
-                reason: 'customer cancel',
-              }, function() {})
-            }
-          }
+          processApply(activity.applys[i])
         }
         res.send(rsp)
       }
