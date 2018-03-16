@@ -7,6 +7,7 @@ var globalInfo = {
     value: '',
     validTime: 0
   },
+  templateWechatNotify: {}
 };
 
 module.exports = globalInfo;

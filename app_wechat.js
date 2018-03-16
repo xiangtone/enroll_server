@@ -20,6 +20,7 @@ var globalInfo = require('./globalInfo.js');
 
 var pu = require('./lib/privateUtil.js');
 var mo = require('./lib/mongoOperate.js');
+var ts = require('./lib/templateSender.js');
 var log4js = require('log4js');
 var logger = log4js.getLogger();
 
@@ -400,6 +401,7 @@ function confirmApply(req, res) {
   var currentTime = new Date()
 
   function confirm(transferInfo) {
+    ts.sendVerify(req.session.fetchWechatUserInfo.openid)
     var updateData = {}
     updateData["applys." + targetI + ".status"] = 'pass'
     updateData["applys." + targetI + ".confirmTime"] = currentTime
@@ -517,7 +519,6 @@ function delApplyFromActivity(options, callback) {
 function cancelEnrollByCustomer(req, res) {
   var currentTime = new Date()
   var rsp = { status: 'ok' }
-
 
   mo.findOneDocumentById('activitys', req.body.activityId, function(activity) {
     if (activity) {
