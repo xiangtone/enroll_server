@@ -129,6 +129,7 @@ Mongo.getConnection(CONFIG.MONGODB.URL_ACTIVITY, {
 }).then(
   function() {
     new CronJob('*/5 * * * * *', freshGlobalConfig, null, true, 'Asia/Shanghai');
+    //以cluster模式运行的时候，需要挪出
     new CronJob('*/8 * * * * *', scanPayToFounder, null, true, 'Asia/Shanghai');
   }
 ).catch(error => { logger.error('caught', error); })
@@ -420,11 +421,10 @@ function confirmApply(req, res) {
       }
     })
   }
-  formatApply(req)
   mo.findOneDocumentById('activitys', req.body.activity_id, function(activity) {
     if (checkFounderSession(activity, req)) {
       for (var i = 1; i < activity.applys.length; i++) {
-        if (_.isEqual(activity.applys[i], req.body.apply)) {
+        if (req.body.applyId == activity.applys[i]._id.toString()) {
           targetI = i
           if (activity.applys[i].payToFounderStatus == 'wait' && activity.applys[i].payToFounderSchedule < currentTime && !activity.applys[i].payToFounderDateTime) {
             var transferInfo = {
@@ -455,20 +455,6 @@ function confirmApply(req, res) {
   });
 }
 
-function formatApply(req) {
-  if (req.body.apply.applyTime) {
-    req.body.apply.applyTime = new Date(req.body.apply.applyTime)
-  }
-  if (req.body.apply.confirmTime) {
-    req.body.apply.confirmTime = new Date(req.body.apply.confirmTime)
-  }
-  if (req.body.apply.payToFounderDateTime) {
-    req.body.apply.payToFounderDateTime = new Date(req.body.apply.payToFounderDateTime)
-  }
-  if (req.body.apply.payToFounderSchedule) {
-    req.body.apply.payToFounderSchedule = new Date(req.body.apply.payToFounderSchedule)
-  }
-}
 
 function refundApply(apply, callback) {
   mo.findOneDocumentByFilter('logPays', { payKey: apply._id, status: 'payed' }, null, async function(logPay) {
