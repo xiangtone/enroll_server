@@ -516,6 +516,15 @@ function cancelEnrollByCustomer(req, res) {
               targetApply: apply,
               reason: 'customer cancel',
             }, function() {})
+          } else if (apply.status == 'wait') {
+            logger.debug('enter refund process')
+            refundApply(apply, function() {
+              delApplyFromActivity({
+                activityId: activity._id.toString(),
+                targetApply: apply,
+                reason: 'customer cancel',
+              }, function() {})
+            })
           } else if (apply.payToFounderStatus == 'wait' && apply.payToFounderSchedule > currentTime && !apply.payToFounderDateTime) {
             logger.debug('enter refund process')
             refundApply(apply, function() {
