@@ -401,27 +401,27 @@ function confirmApply(req, res) {
   var targetI = -1
   var currentTime = new Date()
 
-  function confirm(transferInfo) {
-    ts.sendVerify(req.session.fetchWechatUserInfo.openid)
-    var updateData = {}
-    updateData["applys." + targetI + ".status"] = 'pass'
-    updateData["applys." + targetI + ".confirmTime"] = currentTime
-    if (transferInfo) {
-      updateData["applys." + targetI + ".payToFounderStatus"] = 'payed'
-      updateData["applys." + targetI + ".payToFounderDateTime"] = currentTime
-    }
-    mo.updateOne('activitys', {
-      _id: new ObjectId(req.body.activity_id),
-    }, { $set: updateData }, function() {
-      res.send({
-        status: 'ok',
-      })
-      if (transferInfo) {
-        transferAndLog(transferInfo)
-      }
-    })
-  }
   mo.findOneDocumentById('activitys', req.body.activity_id, function(activity) {
+    function confirm(transferInfo) {
+      ts.sendVerify({ activity: activity, targetIndex: targetI })
+      var updateData = {}
+      updateData["applys." + targetI + ".status"] = 'pass'
+      updateData["applys." + targetI + ".confirmTime"] = currentTime
+      if (transferInfo) {
+        updateData["applys." + targetI + ".payToFounderStatus"] = 'payed'
+        updateData["applys." + targetI + ".payToFounderDateTime"] = currentTime
+      }
+      mo.updateOne('activitys', {
+        _id: new ObjectId(req.body.activity_id),
+      }, { $set: updateData }, function() {
+        res.send({
+          status: 'ok',
+        })
+        if (transferInfo) {
+          transferAndLog(transferInfo)
+        }
+      })
+    }
     if (checkFounderSession(activity, req)) {
       for (var i = 1; i < activity.applys.length; i++) {
         if (req.body.applyId == activity.applys[i]._id.toString()) {
@@ -514,24 +514,22 @@ function cancelEnrollByCustomer(req, res) {
             delApplyFromActivity({
               activityId: activity._id.toString(),
               targetApply: apply,
-              reason: 'customer cancel',
+              reason: 'customer cancel fee free',
             }, function() {})
           } else if (apply.status == 'wait') {
-            logger.debug('enter refund process')
             refundApply(apply, function() {
               delApplyFromActivity({
                 activityId: activity._id.toString(),
                 targetApply: apply,
-                reason: 'customer cancel',
+                reason: 'customer not confirm yet cancel',
               }, function() {})
             })
           } else if (apply.payToFounderStatus == 'wait' && apply.payToFounderSchedule > currentTime && !apply.payToFounderDateTime) {
-            logger.debug('enter refund process')
             refundApply(apply, function() {
               delApplyFromActivity({
                 activityId: activity._id.toString(),
                 targetApply: apply,
-                reason: 'customer cancel',
+                reason: 'customer cancel , not transfer to founder yet',
               }, function() {})
             })
           } else if (apply.payToFounderStatus == 'payed' && apply.payToFounderDateTime && apply.payToFounderAmount >= 100) {
@@ -953,7 +951,7 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
                           title: '报名成功，点击查看',
                           description: activity.founderNickName + '组织的' + activity.activityTitle,
                           picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
-                          url: 'https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_view?activity_id=' + qrcode.activityId
+                          url: pu.viewUrl(qrcode.activityId)
                         }]);
                       })
                     } else {
@@ -961,7 +959,7 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
                         title: '您已经报名参加，点击查看',
                         description: activity.founderNickName + '组织的' + activity.activityTitle,
                         picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
-                        url: 'https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_view?activity_id=' + qrcode.activityId
+                        url: pu.viewUrl(qrcode.activityId)
                       }]);
                     }
                   })
@@ -974,7 +972,7 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
                   title: activity.activityTitle + ':' + checkActivityEnrollEnableResult + ':查看详情',
                   description: activity.founderNickName + '组织的' + activity.activityTitle,
                   picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
-                  url: 'https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_view?activity_id=' + qrcode.activityId
+                  url: pu.viewUrl(qrcode.activityId)
                 }]);
               }
             } else {
@@ -982,7 +980,7 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
                 title: '点击报名参加' + activity.activityTitle,
                 description: activity.founderNickName + '组织' + activity.activityTitle,
                 picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
-                url: 'https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_view?activity_id=' + qrcode.activityId
+                url: pu.viewUrl(qrcode.activityId)
               }]);
               // resp = '<xml><ToUserName><![CDATA[' + req.body.xml.fromusername + ']]></ToUserName><FromUserName><![CDATA[' + req.body.xml.tousername + ']]></FromUserName><CreateTime>' + ctimeSecond + '</CreateTime><MsgType><![CDATA[news]]></MsgType><ArticleCount>1</ArticleCount><Articles><item><Title><![CDATA[点击报名参加' + activity.activityTitle + ']]></Title><Description><![CDATA[' + activity.founderNickName + '组织]]></Description><PicUrl><![CDATA[https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png]]></PicUrl><Url><![CDATA[https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_view?activity_id=' + qrcode.activityId + ']]></Url></item></Articles></xml>'
             }
