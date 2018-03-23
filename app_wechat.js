@@ -20,6 +20,7 @@ var globalInfo = require('./globalInfo.js');
 
 var pu = require('./lib/privateUtil.js');
 var mo = require('./lib/mongoOperate.js');
+var mso = require('./lib/mongoSessionOperate.js');
 var ts = require('./lib/templateSender.js');
 var log4js = require('log4js');
 var logger = log4js.getLogger();
@@ -516,15 +517,7 @@ function cancelEnrollByCustomer(req, res) {
               targetApply: apply,
               reason: 'customer cancel fee free',
             }, function() {})
-          } else if (apply.status == 'wait') {
-            refundApply(apply, function() {
-              delApplyFromActivity({
-                activityId: activity._id.toString(),
-                targetApply: apply,
-                reason: 'customer not confirm yet cancel',
-              }, function() {})
-            })
-          } else if (apply.payToFounderStatus == 'wait' && apply.payToFounderSchedule > currentTime && !apply.payToFounderDateTime) {
+          } else if (apply.payToFounderStatus == 'wait' && !apply.payToFounderDateTime) {
             refundApply(apply, function() {
               delApplyFromActivity({
                 activityId: activity._id.toString(),
@@ -595,19 +588,20 @@ function delApply(req, res) {
             }
           }
           targetI = i
+          ts.sendReject({ activity: activity, targetIndex: targetI })
           if (activity.applys[i].enrollPrice == 0) {
             delApplyFromActivity({
               activityId: activity._id.toString(),
               targetApply: activity.applys[i],
               reason: 'founder delete',
             }, sendOk)
-          } else if (activity.applys[i].payToFounderStatus == 'wait' && activity.applys[i].payToFounderSchedule > currentTime && !activity.applys[i].payToFounderDateTime) {
+          } else if (activity.applys[i].payToFounderStatus == 'wait' && !activity.applys[i].payToFounderDateTime) {
             logger.debug('enter refund process')
             refundApply(activity.applys[i], function() {
               delApplyFromActivity({
                 activityId: activity._id.toString(),
                 targetApply: activity.applys[i],
-                reason: 'founder delete',
+                reason: 'founder delete payToFounderStatus is wait',
               }, sendOk)
             })
           } else if (activity.applys[i].payToFounderStatus == 'payed' && activity.applys[i].payToFounderDateTime && activity.applys[i].payToFounderAmount >= 100) {
@@ -770,10 +764,11 @@ function enrollQrcode(req, res) {
   var rsp = {}
 
   function successRsp() {
-    req.session.destroy(function(err) {
-      logger.debug('enrollQrcode successRsp destroy session', err)
-      res.send(rsp);
-    })
+    // req.session.destroy(function(err) {
+    //   logger.debug('enrollQrcode successRsp destroy session', err)
+    //   res.send(rsp);
+    // })
+    res.send(rsp);
   }
   mo.findOneDocumentByFilter('qrcodes', {
     'act': 'enroll',
@@ -922,6 +917,7 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
   var eventKey = message.EventKey
 
   function procSubsribeNotify() {
+    mso.delSession(message.FromUserName)
     var ctimeSecond = new Date().getTime() / 1000
     var resp = ''
 
@@ -999,9 +995,14 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
   } else if (message.MsgType == 'event' && message.Event == 'subscribe' && message.EventKey) {
     eventKey = message.EventKey.split('_')[1]
     procSubsribeNotify()
+  } else if (message.MsgType == 'event' && message.Event == 'unsubscribe') {
+    mso.delSession(message.FromUserName)
+    res.send('');
   } else {
     res.send('');
   }
+  req.session.destroy(function(err) {})
+  // req.session.save(null)
 }));
 
 function transferAndLog(transferInfo, callback) {
@@ -1140,6 +1141,7 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
 
   // 回复成功消息
   res.reply();
+  req.session.save(null)
   // 回复错误消息
   // res.reply('错误信息');
 });
