@@ -664,6 +664,48 @@ function getActivity(req, res) {
   });
 }
 
+function getActivityFoundList(req, res) {
+  mo.findDocuments({
+    collection: 'activitys',
+    condition: {
+      founderUnionId: req.session.fetchWechatUserInfo.unionid
+    },
+    sort: {
+      activityDateTime: -1
+    }
+  }, function(activitys) {
+    var rsp = {
+      status: 'ok',
+      data: activitys,
+    }
+    res.send(rsp);
+  });
+}
+
+function getActivityApplyList(req, res) {
+  mo.findDocuments({
+    collection: 'activitys',
+    condition: {
+      "applys.unionId": req.session.fetchWechatUserInfo.unionid
+    },
+    sort: {
+      activityDateTime: -1
+    }
+  }, function(activitys) {
+    var result = []
+    for (var i of activitys) {
+      if (i.applys[0].unionId != req.session.fetchWechatUserInfo.unionid) {
+        result.push(i)
+      }
+    }
+    var rsp = {
+      status: 'ok',
+      data: result,
+    }
+    res.send(rsp);
+  });
+}
+
 function wechatLogin(req, res) {
   var rsp = {
     status: 'ok',
@@ -1149,6 +1191,8 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
 app.get(CONFIG.DIR_FIRST + '/ajaxPub/signWechat', signOutWithAjax);
 app.get(CONFIG.DIR_FIRST + '/ajax/index.html', getSession);
 app.get(CONFIG.DIR_FIRST + '/ajax/getActivity', getActivity);
+app.get(CONFIG.DIR_FIRST + '/ajax/getActivityFoundList', getActivityFoundList);
+app.get(CONFIG.DIR_FIRST + '/ajax/getActivityApplyList', getActivityApplyList);
 app.get(CONFIG.DIR_FIRST + '/ajwechatLogin', wechatLogin);
 app.post(CONFIG.DIR_FIRST + '/ajax/enrollActivity', jsonParser, enrollActivityAjax);
 app.post(CONFIG.DIR_FIRST + '/ajax/enrollQrcode', jsonParser, enrollQrcode);
