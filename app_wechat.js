@@ -273,12 +273,17 @@ app.use(function(req, res, next) {
       response.on('end', function() {
         var rev = JSON.parse(body);
         logger.debug('fetch baseinfo', rev);
-        req.session.fetchWechatUserInfo = rev
-        req.session.save(null)
-        if (req.session.wechatBase.scope == 'snsapi_userinfo') {
-          oAuthUserInfo();
+        if (rev.errcode) {
+          logger.error('fetch baseinfo')
+          req.session.destroy(null)
         } else {
-          redirectAfterOAuthSuccess();
+          req.session.fetchWechatUserInfo = rev
+          req.session.save(null)
+          if (req.session.wechatBase.scope == 'snsapi_userinfo') {
+            oAuthUserInfo();
+          } else {
+            redirectAfterOAuthSuccess();
+          }
         }
       });
     });
@@ -362,14 +367,19 @@ function createActivity(req, res) {
       founderNickName: req.body.founderNickName,
       activityTitle: req.body.activityTitle,
       activityAddress: req.body.activityAddress,
+      activityField: req.body.activityField,
+      activityNotice: req.body.activityNotice,
       activityDateTime: new Date(req.body.activityDateTime),
+      spendHours: req.body.spendHours,
       numberMax: req.body.numberMax,
       numberMin: req.body.numberMin,
       confirmDayCount: req.body.confirmDayCount,
       enrollPrice: req.body.enrollPrice,
+      enrollPriceFemale: req.body.enrollPriceFemale,
       activityConfirmSwitch: req.body.activityConfirmSwitch,
       enrollAgentSwitch: req.body.enrollAgentSwitch,
       alternateSwitch: req.body.alternateSwitch,
+      notifySwitch: req.body.notifySwitch,
       founderUnionId: req.session.fetchWechatUserInfo.unionid,
       founderOpenId: req.session.fetchWechatUserInfo.openid,
       lastModifyTime: new Date(),
@@ -550,16 +560,35 @@ function cancelEnrollByCustomer(req, res) {
   })
 }
 
+function delActivity(req, res) {
+  mo.findOneDocumentById('activitys', req.body.activity_id, function(activity) {
+    if (checkFounderSession(activity, req)) {
+      if (activity.applys.length == 1) {
+        mo.updateOne('activitys', { _id: new ObjectId(req.body.activity_id) }, { $set: { status: 'delete' } }, function(docs) {
+          sendOk(res)
+        })
+      } else {
+        res.send({
+          status: 'error',
+          msg: 'please delete all other apply'
+        })
+      }
+    } else {
+      res.send({
+        status: 'error',
+        msg: 'only founder can do'
+      })
+    }
+  })
+}
 
+function sendOk(res) {
+  res.send({
+    status: 'ok',
+  })
+}
 
 function delApply(req, res) {
-
-  function sendOk() {
-    res.send({
-      status: 'ok',
-    })
-  }
-
   var targetI = -1
   var currentTime = new Date()
   mo.findOneDocumentById('activitys', req.body.activity_id, function(activity) {
@@ -594,7 +623,7 @@ function delApply(req, res) {
               activityId: activity._id.toString(),
               targetApply: activity.applys[i],
               reason: 'founder delete',
-            }, sendOk)
+            }, function() { sendOk(res) })
           } else if (activity.applys[i].payToFounderStatus == 'wait' && !activity.applys[i].payToFounderDateTime) {
             logger.debug('enter refund process')
             refundApply(activity.applys[i], function() {
@@ -602,7 +631,7 @@ function delApply(req, res) {
                 activityId: activity._id.toString(),
                 targetApply: activity.applys[i],
                 reason: 'founder delete payToFounderStatus is wait',
-              }, sendOk)
+              }, function() { sendOk(res) })
             })
           } else if (activity.applys[i].payToFounderStatus == 'payed' && activity.applys[i].payToFounderDateTime && activity.applys[i].payToFounderAmount >= 100) {
             //拉起支付
@@ -623,7 +652,7 @@ function delApply(req, res) {
               activityId: activity._id.toString(),
               targetApply: activity.applys[i],
               reason: 'founder delete',
-            }, sendOk)
+            }, function() { sendOk(res) })
           }
           break;
         }
@@ -656,11 +685,24 @@ function checkFounderSession(activity, req) {
 
 function getActivity(req, res) {
   mo.findOneDocumentById('activitys', req.query.activity_id, function(activity) {
-    var rsp = {
-      status: 'ok',
-      data: activity,
+    if (activity) {
+      if (activity.status && activity.status == 'delete') {
+        res.send({
+          status: 'error',
+          msg: 'activity is delete'
+        });
+      } else {
+        res.send({
+          status: 'ok',
+          data: activity,
+        });
+      }
+    } else {
+      res.send({
+        status: 'error',
+        msg: 'activity is not exist'
+      });
     }
-    res.send(rsp);
   });
 }
 
@@ -668,7 +710,8 @@ function getActivityFoundList(req, res) {
   mo.findDocuments({
     collection: 'activitys',
     condition: {
-      founderUnionId: req.session.fetchWechatUserInfo.unionid
+      founderUnionId: req.session.fetchWechatUserInfo.unionid,
+      status: { $ne: 'delete' }
     },
     sort: {
       activityDateTime: -1
@@ -686,7 +729,8 @@ function getActivityApplyList(req, res) {
   mo.findDocuments({
     collection: 'activitys',
     condition: {
-      "applys.unionId": req.session.fetchWechatUserInfo.unionid
+      "applys.unionId": req.session.fetchWechatUserInfo.unionid,
+      status: { $ne: 'delete' }
     },
     sort: {
       activityDateTime: -1
@@ -1183,7 +1227,8 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
 
   // 回复成功消息
   res.reply();
-  req.session.save(null)
+  req.session.destroy(function(err) {})
+  // req.session.save(null)
   // 回复错误消息
   // res.reply('错误信息');
 });
@@ -1199,6 +1244,7 @@ app.post(CONFIG.DIR_FIRST + '/ajax/enrollQrcode', jsonParser, enrollQrcode);
 app.post(CONFIG.DIR_FIRST + '/ajax/createActivity', jsonParser, createActivity);
 app.post(CONFIG.DIR_FIRST + '/ajax/confirmApply', jsonParser, confirmApply);
 app.post(CONFIG.DIR_FIRST + '/ajax/delApply', jsonParser, delApply);
+app.post(CONFIG.DIR_FIRST + '/ajax/delActivity', jsonParser, delActivity);
 app.post(CONFIG.DIR_FIRST + '/ajhrefRecord', jsonParser, hrefRecord);
 app.post(CONFIG.DIR_FIRST + '/ajax/cancelEnrollByCustomer', jsonParser, cancelEnrollByCustomer);
 // app.post(CONFIG.DIR_FIRST + '/ajInterface', xmlparser({
