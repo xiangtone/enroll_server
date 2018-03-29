@@ -389,10 +389,12 @@ function createActivity(req, res) {
           openId: req.session.fetchWechatUserInfo.openid,
           status: 'pass',
           wechatNickName: req.session.fetchWechatUserInfo.nickname,
+          wechatUserInfo: req.session.fetchWechatUserInfo,
           displayNickName: req.body.founderNickName,
           headimgurl: req.session.fetchWechatUserInfo.headimgurl,
           confirmTime: new Date(),
-          enrollNumber: 1,
+          enrollNumber: req.session.fetchWechatUserInfo.sex == 2 ? 0 : 1,
+          enrollNumberFemale: req.session.fetchWechatUserInfo.sex == 2 ? 1 : 0,
           enrollPrice: 0,
         })
       ]
@@ -536,7 +538,7 @@ function cancelEnrollByCustomer(req, res) {
               }, function() {})
             })
           } else if (apply.payToFounderStatus == 'payed' && apply.payToFounderDateTime && apply.payToFounderAmount >= 100) {
-            rsp = { status: 'error', msg: '费用已经支付给活动组织者，需要组织者在管理中退费' }
+            rsp = { status: 'error', msg: '费用已支付给组织者，请联系组织者在报名中退费' }
           } else {
             delApplyFromActivity({
               activityId: activity._id.toString(),
@@ -600,7 +602,7 @@ function delApply(req, res) {
               try {
                 let unifiedOrder = await weixin_pay_api.unifiedOrder({
                   out_trade_no: insertedUnifiedOrder.ops[0]._id.toString(),
-                  body: '退回' + activity.applys[i].displayNickName + '参加' + activity.title + '的费用',
+                  body: '退回' + activity.applys[i].displayNickName + '参加' + activity.activityTitle + '的费用',
                   total_fee: activity.applys[i].payToFounderAmount,
                   openid: req.session.fetchWechatUserInfo.openid,
                   // notify_url: 'https://' + CONFIG.DOMAIN + '/' + CONFIG.PAY_DIR_FIRST + insertedUnifiedOrder.ops[0]._id.toString(),
@@ -617,13 +619,16 @@ function delApply(req, res) {
             }
           }
           targetI = i
-          ts.sendReject({ activity: activity, targetIndex: targetI })
-          if (activity.applys[i].enrollPrice == 0) {
+
+          if ((activity.applys[i].enrollPrice * activity.applys[i].enrollNumber + activity.applys[i].enrollPriceFemale * activity.applys[i].enrollNumberFemale) == 0) {
             delApplyFromActivity({
               activityId: activity._id.toString(),
               targetApply: activity.applys[i],
               reason: 'founder delete',
-            }, function() { sendOk(res) })
+            }, function() {
+              sendOk(res)
+              ts.sendReject({ activity: activity, targetIndex: targetI })
+            })
           } else if (activity.applys[i].payToFounderStatus == 'wait' && !activity.applys[i].payToFounderDateTime) {
             logger.debug('enter refund process')
             refundApply(activity.applys[i], function() {
@@ -631,7 +636,10 @@ function delApply(req, res) {
                 activityId: activity._id.toString(),
                 targetApply: activity.applys[i],
                 reason: 'founder delete payToFounderStatus is wait',
-              }, function() { sendOk(res) })
+              }, function() {
+                sendOk(res)
+                ts.sendReject({ activity: activity, targetIndex: targetI })
+              })
             })
           } else if (activity.applys[i].payToFounderStatus == 'payed' && activity.applys[i].payToFounderDateTime && activity.applys[i].payToFounderAmount >= 100) {
             //拉起支付
@@ -652,7 +660,10 @@ function delApply(req, res) {
               activityId: activity._id.toString(),
               targetApply: activity.applys[i],
               reason: 'founder delete',
-            }, function() { sendOk(res) })
+            }, function() {
+              sendOk(res)
+              ts.sendReject({ activity: activity, targetIndex: targetI })
+            })
           }
           break;
         }
@@ -768,72 +779,114 @@ function enrollActivity(activity, apply, callback) {
 
 function enrollActivityAjax(req, res) {
   mo.findOneDocumentById('activitys', req.body.activityId, function(activity) {
+    if (activity) {
+      var fee = 0
+      var rsp = { status: 'ok' }
 
-    function enrollAndSend() {
-      enrollActivity(activity, initialApply({
-        status: activity.activityConfirmSwitch ? 'wait' : 'pass',
-        displayNickName: req.body.displayNickName,
-        enrollNumber: req.body.enrollNumber,
-        unionId: req.session.fetchWechatUserInfo.unionid,
-        openId: req.session.fetchWechatUserInfo.openid,
-        wechatNickName: req.session.fetchWechatUserInfo.nickname,
-        headimgurl: req.session.fetchWechatUserInfo.headimgurl,
-        confirmTime: activity.activityConfirmSwitch ? null : new Date(),
-        enrollPrice: 0,
-      }), function() {
-        res.send(rsp);
-      })
-    }
+      if (!activity.enrollAgentSwitch) {
+        if (req.session.fetchWechatUserInfo.sex == 2) {
+          req.body.enrollNumberFemale = 1
+          req.body.enrollNumber = 0
+        } else {
+          req.body.enrollNumberFemale = 0
+          req.body.enrollNumber = 1
+        }
+      }
 
-    async function insertUnifiedOrderCallback(insertedUnifiedOrder) {
-      if (insertedUnifiedOrder.result.ok == 1) {
-        try {
-          let unifiedOrder = await weixin_pay_api.unifiedOrder({
-            out_trade_no: insertedUnifiedOrder.ops[0]._id.toString(),
-            body: '参加' + activity.founderNickName + '组织的' + activity.title + '的费用',
-            total_fee: 100 * activity.enrollPrice * req.body.enrollNumber,
-            openid: req.session.fetchWechatUserInfo.openid,
-            // notify_url: 'https://' + CONFIG.DOMAIN + '/' + CONFIG.PAY_DIR_FIRST + insertedUnifiedOrder.ops[0]._id.toString(),
-          });
-          let resultForJsapi = await weixin_pay_api.getPayParamsByPrepay({
-            prepay_id: unifiedOrder.prepay_id
-          });
-          rsp.type = 'unifiedOrder'
-          rsp.data = resultForJsapi
+
+      function enrollAndSend() {
+        enrollActivity(activity, initialApply({
+          status: activity.activityConfirmSwitch ? 'wait' : 'pass',
+          displayNickName: req.body.displayNickName,
+          enrollNumber: req.body.enrollNumber,
+          enrollNumberFemale: req.body.enrollNumberFemale,
+          unionId: req.session.fetchWechatUserInfo.unionid,
+          openId: req.session.fetchWechatUserInfo.openid,
+          wechatNickName: req.session.fetchWechatUserInfo.nickname,
+          wechatUserInfo: req.session.fetchWechatUserInfo,
+          headimgurl: req.session.fetchWechatUserInfo.headimgurl,
+          confirmTime: activity.activityConfirmSwitch ? null : new Date(),
+          enrollPrice: 0,
+        }), function() {
           res.send(rsp);
-        } catch (e) {
-          logger.error(e.name + ": " + e.message);
-          logger.error(e.stack);
-        }
+        })
       }
-    }
 
-    var rsp = { status: 'ok' }
-    if ((checkEnrolled(req.session.fetchWechatUserInfo.unionid, activity.applys)).length > 0) {
-      rsp = {
-        status: 'error',
-        msg: 'enrolled',
-      }
-      res.send(rsp);
-    } else {
-      if (activity.enrollPrice == 0) {
-        enrollAndSend()
-      } else {
-        var insertUnifiedOrderData = {
-          collection: 'unifiedOrders',
-          documents: [{
-            activityId: req.body.activityId,
-            wechatUserInfo: req.session.fetchWechatUserInfo,
-            enrollNumber: req.body.enrollNumber,
-            enrollPrice: activity.enrollPrice,
-            expiredTime: new Date(Date.now() + 86400 * 1000 * 3),
-            payProcess: 'wait',
-            displayNickName: req.body.displayNickName,
-            type: 'enroll',
-          }]
+      async function insertUnifiedOrderCallback(insertedUnifiedOrder) {
+        if (insertedUnifiedOrder.result.ok == 1) {
+          try {
+            let unifiedOrder = await weixin_pay_api.unifiedOrder({
+              out_trade_no: insertedUnifiedOrder.ops[0]._id.toString(),
+              body: '参加' + activity.founderNickName + '组织的' + activity.activityTitle + '的费用',
+              total_fee: 100 * fee,
+              openid: req.session.fetchWechatUserInfo.openid,
+              // notify_url: 'https://' + CONFIG.DOMAIN + '/' + CONFIG.PAY_DIR_FIRST + insertedUnifiedOrder.ops[0]._id.toString(),
+            });
+            let resultForJsapi = await weixin_pay_api.getPayParamsByPrepay({
+              prepay_id: unifiedOrder.prepay_id
+            });
+            rsp.type = 'unifiedOrder'
+            rsp.data = resultForJsapi
+            res.send(rsp);
+          } catch (e) {
+            logger.error(e.name + ": " + e.message);
+            logger.error(e.stack);
+          }
         }
-        mo.insertDocuments(insertUnifiedOrderData, insertUnifiedOrderCallback)
       }
+
+      function feeCompute() {
+        var result = 0
+        if (activity.enrollPrice == 0 && activity.enrollPriceFemale == 0) {
+          return result
+        } else {
+          if (activity.enrollAgentSwitch) {
+            return activity.enrollPriceFemale * parseInt(req.body.enrollNumberFemale) + activity.enrollPrice * parseInt(req.body.enrollNumber)
+          } else {
+            if (req.session.fetchWechatUserInfo.sex == 2) {
+              req.body.enrollNumberFemale = 1
+              req.body.enrollNumber = 0
+              return activity.enrollPriceFemale
+            } else {
+              req.body.enrollNumberFemale = 0
+              req.body.enrollNumber = 1
+              return activity.enrollPrice
+            }
+          }
+        }
+      }
+
+      if ((checkEnrolled(req.session.fetchWechatUserInfo.unionid, activity.applys)).length > 0) {
+        rsp = {
+          status: 'error',
+          msg: 'enrolled',
+        }
+        res.send(rsp);
+      } else {
+        fee = feeCompute()
+        if (fee == 0) {
+          enrollAndSend()
+        } else {
+          var insertUnifiedOrderData = {
+            collection: 'unifiedOrders',
+            documents: [{
+              activityId: req.body.activityId,
+              wechatUserInfo: req.session.fetchWechatUserInfo,
+              enrollNumber: req.body.enrollNumber,
+              enrollPrice: activity.enrollPrice,
+              enrollNumberFemale: req.body.enrollNumberFemale,
+              enrollPriceFemale: activity.enrollPriceFemale,
+              expiredTime: new Date(Date.now() + 86400 * 1000 * 3),
+              payProcess: 'wait',
+              displayNickName: req.body.displayNickName,
+              type: 'enroll',
+            }]
+          }
+          mo.insertDocuments(insertUnifiedOrderData, insertUnifiedOrderCallback)
+        }
+      }
+    } else {
+      res.send({ status: 'error', msg: 'activity can not find' });
     }
   });
 }
@@ -932,13 +985,16 @@ function initialApply(options) {
     unionId: options.unionId,
     openId: options.openId,
     status: options.status,
+    wechatUserInfo: options.wechatUserInfo,
     applyTime: new Date(),
     confirmTime: options.confirmTime,
     displayNickName: options.displayNickName,
     wechatNickName: options.wechatNickName,
     headimgurl: options.headimgurl,
-    enrollNumber: options.enrollNumber ? options.enrollNumber : 1,
+    enrollNumber: parseInt(options.enrollNumber),
+    enrollNumberFemale: parseInt(options.enrollNumberFemale),
     enrollPrice: options.enrollPrice ? options.enrollPrice : 0,
+    enrollPriceFemale: options.enrollPriceFemale ? options.enrollPriceFemale : 0,
     payToFounderStatus: options.payToFounderStatus ? options.payToFounderStatus : null,
     payToFounderDateTime: options.payToFounderDateTime ? options.payToFounderDateTime : null,
     payToFounderAmount: options.payToFounderAmount ? options.payToFounderAmount : null,
@@ -1022,8 +1078,10 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
                         openId: response.data.openid,
                         status: activity.activityConfirmSwitch ? 'wait' : 'pass',
                         displayNickName: response.data.nickname,
-                        enrollNumber: 1,
+                        enrollNumber: response.data.sex == 2 ? 0 : 1,
+                        enrollNumberFemale: response.data.sex == 2 ? 1 : 0,
                         unionId: response.data.unionid,
+                        wechatUserInfo: response.data,
                         wechatNickName: response.data.nickname,
                         headimgurl: response.data.headimgurl,
                         confirmTime: activity.activityConfirmSwitch ? null : new Date(),
@@ -1087,7 +1145,7 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
   } else {
     res.send('');
   }
-  req.session.destroy(function(err) {})
+  req.session.destroy(null)
   // req.session.save(null)
 }));
 
@@ -1140,7 +1198,7 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
             var schedulePayDateTime = (new Date(activity.activityDateTime)).getTime() - 86400000 * activity.confirmDayCount
             var amount = 0
             var payToFounderSchedule = null
-            if (info.total_fee == 100 * unifiedOrder.enrollPrice * unifiedOrder.enrollNumber) {
+            if (info.total_fee == 100 * (unifiedOrder.enrollPrice * unifiedOrder.enrollNumber + unifiedOrder.enrollPriceFemale * unifiedOrder.enrollNumberFemale)) {
               if (info.total_fee >= 100) {
                 amount = Math.floor(info.total_fee * (1 - globalInfo.config.payRatio))
                 if (amount < 100) {
@@ -1169,12 +1227,15 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
               status: activity.activityConfirmSwitch ? 'wait' : 'pass',
               displayNickName: unifiedOrder.displayNickName,
               enrollNumber: unifiedOrder.enrollNumber,
+              enrollNumberFemale: unifiedOrder.enrollNumberFemale,
               unionId: unifiedOrder.wechatUserInfo.unionid,
               openId: unifiedOrder.wechatUserInfo.openid,
               wechatNickName: unifiedOrder.wechatUserInfo.nickname,
+              wechatUserInfo: unifiedOrder.wechatUserInfo,
               headimgurl: unifiedOrder.wechatUserInfo.headimgurl,
               confirmTime: activity.activityConfirmSwitch ? null : new Date(),
               enrollPrice: unifiedOrder.enrollPrice,
+              enrollPriceFemale: unifiedOrder.enrollPriceFemale,
               payToFounderStatus: payToFounderStatus,
               payToFounderDateTime: payToFounderStatus == 'payed' ? new Date() : null,
               payToFounderAmount: amount,
@@ -1207,7 +1268,9 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
                 }, function() {
                   mo.updateOne('unifiedOrders', { _id: unifiedOrder._id }, {
                     $set: { payProcess: 'done' }
-                  }, function(result) {})
+                  }, function(result) {
+                    ts.sendReject({ activity: activity, targetIndex: i })
+                  })
                 })
               })
               break
@@ -1227,8 +1290,7 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
 
   // 回复成功消息
   res.reply();
-  req.session.destroy(function(err) {})
-  // req.session.save(null)
+  req.session.destroy(null)
   // 回复错误消息
   // res.reply('错误信息');
 });
