@@ -773,6 +773,11 @@ function enrollActivity(activity, apply, callback) {
   mo.updateOne('activitys', { _id: activity._id }, {
     $addToSet: { applys: apply }
   }, function(result) {
+    if (activity.notifySwitch) {
+      mo.findOneDocumentById('activitys', activity._id.toString(), function(doc) {
+        ts.sendApply({ activity: doc, targetIndex: activity.applys.length })
+      })
+    }
     callback()
   })
 }
@@ -792,7 +797,6 @@ function enrollActivityAjax(req, res) {
           req.body.enrollNumber = 1
         }
       }
-
 
       function enrollAndSend() {
         enrollActivity(activity, initialApply({
