@@ -521,21 +521,24 @@ function cancelEnrollByCustomer(req, res) {
 
   mo.findOneDocumentById('activitys', req.body.activityId, function(activity) {
     if (activity) {
-      function processApply(apply) {
+      function processApply(apply, indexI) {
+        function sendCancel() {
+          ts.sendCancel({ activity: activity, targetIndex: indexI })
+        }
         if (req.session.fetchWechatUserInfo.unionid == apply.unionId) {
           if (apply.enrollPrice == 0) {
             delApplyFromActivity({
               activityId: activity._id.toString(),
               targetApply: apply,
               reason: 'customer cancel fee free',
-            }, function() {})
+            }, sendCancel)
           } else if (apply.payToFounderStatus == 'wait' && !apply.payToFounderDateTime) {
             refundApply(apply, function() {
               delApplyFromActivity({
                 activityId: activity._id.toString(),
                 targetApply: apply,
                 reason: 'customer cancel , not transfer to founder yet',
-              }, function() {})
+              }, sendCancel)
             })
           } else if (apply.payToFounderStatus == 'payed' && apply.payToFounderDateTime && apply.payToFounderAmount >= 100) {
             rsp = { status: 'error', msg: '费用已支付给组织者，请联系组织者在报名中退费' }
@@ -544,7 +547,7 @@ function cancelEnrollByCustomer(req, res) {
               activityId: activity._id.toString(),
               targetApply: apply,
               reason: 'customer cancel',
-            }, function() {})
+            }, sendCancel)
           }
         }
       }
@@ -552,7 +555,7 @@ function cancelEnrollByCustomer(req, res) {
         res.send({ status: 'error', msg: 'founder can not cancel' })
       } else {
         for (var i = 1; i < activity.applys.length; i++) {
-          processApply(activity.applys[i])
+          processApply(activity.applys[i], i)
         }
         res.send(rsp)
       }
@@ -1196,6 +1199,8 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
   mo.findOneDocumentById('unifiedOrders', info.out_trade_no, function(unifiedOrder) {
     if (unifiedOrder && unifiedOrder.payProcess && unifiedOrder.payProcess == 'wait') {
       mo.findOneDocumentById('activitys', unifiedOrder.activityId, function(activity) {
+        logger.debug('weixin_pay_api.middlewareForExpress get activity\n', activity)
+
         function processEnroll() {
           var applyArray = checkEnrolled(unifiedOrder.wechatUserInfo.unionid, activity.applys)
           if (applyArray.length == 0) {
@@ -1262,14 +1267,20 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
         }
 
         function processDel() {
+          logger.debug('weixin_pay_api.middlewareForExpress try to delApplyRefund')
           for (var i = 1; i < activity.applys.length; i++) {
+            logger.debug('weixin_pay_api.middlewareForExpress compare,', unifiedOrder.applyId.toString())
+            logger.debug('weixin_pay_api.middlewareForExpress compare,', activity.applys[i]._id.toString())
             if (unifiedOrder.applyId.toString() == activity.applys[i]._id.toString()) {
+              logger.debug('weixin_pay_api.middlewareForExpress begin delApplyRefund')
               refundApply(activity.applys[i], function() {
+                logger.debug('weixin_pay_api.middlewareForExpress begin delApplyRefund callback')
                 delApplyFromActivity({
                   activityId: activity._id.toString(),
                   targetApply: activity.applys[i],
                   reason: 'founder delete',
                 }, function() {
+                  logger.debug('weixin_pay_api.middlewareForExpress delete apply')
                   mo.updateOne('unifiedOrders', { _id: unifiedOrder._id }, {
                     $set: { payProcess: 'done' }
                   }, function(result) {
