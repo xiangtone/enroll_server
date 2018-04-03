@@ -51,6 +51,22 @@ const configTenPay = {
   spbill_create_ip: '127.0.0.1'
 };
 
+const Validator = require('better-validator');
+const WrapperFormatter = Validator.format.response.WrapperFormatter;
+const FailureFormatter = Validator.format.failure.FailureFormatter;
+
+const check = Validator.koaMiddleware({
+  responseFormatter: new WrapperFormatter(),
+  failureFormatter: new FailureFormatter()
+});
+
+const bodyRuleCreateActivity = (body) => {
+  body('founderNickName').required().isString();
+  body('activityTitle').required().isString();
+  // body('activityDateTime').required().isDate();
+  body('activityAddress').required().isString();
+};
+
 // init调用: 用于多帐号省略new关键字, tenpay.init(config)返回一个新的实例对象
 
 async() => {
@@ -145,6 +161,7 @@ app.use(function(req, res, next) {
       if (req.query.code && req.query.state) {
         isNext = false
         oAuthBaseProcess(req.query.code)
+
       } else {
         if (req.url.indexOf('apply') != -1 && !req.session.wechatUserInfo) {
           toWechatOauth('snsapi_userinfo')
@@ -185,7 +202,7 @@ app.use(function(req, res, next) {
     logger.debug('urlEncodedUrl', urlEncodedUrl)
     var oAuthUrl = 'https://open.weixin.qq.com/connect/oauth2/authorize?appid=' + CONFIG.WECHAT.APPID + '&redirect_uri=' + urlEncodedUrl + '&response_type=code&scope=' + scope + '&state=123#wechat_redirect'
     isNext = false
-    return res.send('<script>location="' + oAuthUrl + '"</script>')
+    // return res.send('<script>location="' + oAuthUrl + '"</script>')
   }
 
   function checkWechatHeader() {
@@ -205,7 +222,7 @@ app.use(function(req, res, next) {
       });
       response.on('end', function() {
         var rev = JSON.parse(body);
-        logger.debug('baseinfo', rev)
+        logger.debug('baseinfo\n', rev)
         if (rev.openid) {
           req.session.wechatBase = rev
           getUserInfoWithOpenId(rev.openid)
@@ -272,7 +289,7 @@ app.use(function(req, res, next) {
       });
       response.on('end', function() {
         var rev = JSON.parse(body);
-        logger.debug('fetch baseinfo', rev);
+        logger.debug('fetch baseinfo\n', rev);
         if (rev.errcode) {
           logger.error('fetch baseinfo')
           req.session.destroy(null)
@@ -315,7 +332,8 @@ app.use(function(req, res, next) {
   function redirectAfterOAuthSuccess() {
     mo.findOneDocumentById('logHrefs', req.query.state, function(docHref) {
       if (docHref) {
-        res.send('<script>location="' + docHref.href + '"</script>')
+        res.redirect(docHref.href)
+        // res.send('<script>location="' + docHref.href + '"</script>')
       } else {
         res.send('error on get href from logs')
       }
@@ -343,9 +361,24 @@ function hrefRecord(req, res) {
   })
 }
 
+function hrefRedirect(req, res) {
+  mo.insertDocuments({
+    collection: 'logHrefs',
+    documents: [{
+      href: req.query.href,
+      expiredTime: new Date(Date.now() + 60 * 1000 * 3),
+    }]
+  }, function(insertedHref) {
+    if (insertedHref.result.ok == 1) {
+      res.redirect('https://open.weixin.qq.com/connect/oauth2/authorize?appid=' + CONFIG.WECHAT.APPID + '&redirect_uri=' + encodeURIComponent('https://' + req.hostname + '/' + CONFIG.DIR_FIRST + '/ajwechatLogin') + '&response_type=code&scope=snsapi_base&state=' + insertedHref.ops[0]._id + '#wechat_redirect')
+    }
+  })
+}
+
 app.use(express.static(path.join(__dirname, 'static')));
 
 function signOutWithAjax(req, res) {
+  logger.debug('signOutWithAjax')
   res.set({
     "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
     "Expires": "-1",
@@ -1318,11 +1351,12 @@ app.get(CONFIG.DIR_FIRST + '/ajax/getActivityApplyList', getActivityApplyList);
 app.get(CONFIG.DIR_FIRST + '/ajwechatLogin', wechatLogin);
 app.post(CONFIG.DIR_FIRST + '/ajax/enrollActivity', jsonParser, enrollActivityAjax);
 app.post(CONFIG.DIR_FIRST + '/ajax/enrollQrcode', jsonParser, enrollQrcode);
-app.post(CONFIG.DIR_FIRST + '/ajax/createActivity', jsonParser, createActivity);
+app.post(CONFIG.DIR_FIRST + '/ajax/createActivity', jsonParser, check.params(bodyRuleCreateActivity), createActivity);
 app.post(CONFIG.DIR_FIRST + '/ajax/confirmApply', jsonParser, confirmApply);
 app.post(CONFIG.DIR_FIRST + '/ajax/delApply', jsonParser, delApply);
 app.post(CONFIG.DIR_FIRST + '/ajax/delActivity', jsonParser, delActivity);
 app.post(CONFIG.DIR_FIRST + '/ajhrefRecord', jsonParser, hrefRecord);
+app.get(CONFIG.DIR_FIRST + '/ajhrefRedirect', hrefRedirect);
 app.post(CONFIG.DIR_FIRST + '/ajax/cancelEnrollByCustomer', jsonParser, cancelEnrollByCustomer);
 // app.post(CONFIG.DIR_FIRST + '/ajInterface', xmlparser({
 //   trim: false,
