@@ -378,13 +378,13 @@ function hrefRedirect(req, res) {
 app.use(express.static(path.join(__dirname, 'static')));
 
 function signOutWithAjax(req, res) {
-  logger.debug('signOutWithAjax')
   res.set({
     "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
     "Expires": "-1",
   })
   var ret = sign(globalInfo.jsapiTicket.value, req.header('Referer'))
   ret.wechatUserInfo = req.session.fetchWechatUserInfo
+  ret.globalConfig = globalInfo.config
   var result = JSON.stringify(ret);
   res.send(result);
 }
@@ -1015,8 +1015,6 @@ function enrollQrcode(req, res) {
       });
     }
   });
-
-
 }
 
 function initialApply(options) {
@@ -1169,14 +1167,19 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
           }
         })
       } else {
-        res.reply("error:qrcode is not existed")
+        res.reply([{
+          title: '点击发起活动',
+          description: '发起新活动',
+          picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
+          url: 'https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_edit'
+        }]);
       }
     });
   }
   // res.send('<xml><return_code><![CDATA[SUCCESS]]></return_code><return_msg><![CDATA[OK]]></return_msg></xml>');
   if (message.MsgType == 'event' && message.Event == 'SCAN' && message.EventKey) {
     procSubsribeNotify()
-  } else if (message.MsgType == 'event' && message.Event == 'subscribe' && message.EventKey) {
+  } else if (message.MsgType == 'event' && message.Event == 'subscribe') {
     eventKey = message.EventKey.split('_')[1]
     procSubsribeNotify()
   } else if (message.MsgType == 'event' && message.Event == 'unsubscribe') {
