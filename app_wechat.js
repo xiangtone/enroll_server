@@ -1081,6 +1081,10 @@ function notify(req, res) {
   }
 }
 
+function formatActivityDescription(activity) {
+  return pu.formatDateToDay(activity.activityDateTime) + '[' + activity.founderNickName + ']组织的' + activity.activityTitle
+}
+
 var wechat = require('wechat');
 var config = {
   token: 'fuming',
@@ -1127,7 +1131,7 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
                       }), function() {
                         res.reply([{
                           title: '报名成功，点击查看',
-                          description: activity.founderNickName + '组织的' + activity.activityTitle,
+                          description: formatActivityDescription(activity),
                           picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
                           url: pu.viewUrl(qrcode.activityId)
                         }]);
@@ -1135,7 +1139,7 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
                     } else {
                       res.reply([{
                         title: '您已经报名参加，点击查看',
-                        description: activity.founderNickName + '组织的' + activity.activityTitle,
+                        description: formatActivityDescription(activity),
                         picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
                         url: pu.viewUrl(qrcode.activityId)
                       }]);
@@ -1148,7 +1152,7 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
               } else {
                 res.reply([{
                   title: activity.activityTitle + ':' + checkActivityEnrollEnableResult + ':查看详情',
-                  description: activity.founderNickName + '组织的' + activity.activityTitle,
+                  description: formatActivityDescription(activity),
                   picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
                   url: pu.viewUrl(qrcode.activityId)
                 }]);
@@ -1156,7 +1160,7 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
             } else {
               res.reply([{
                 title: '点击报名参加' + activity.activityTitle,
-                description: activity.founderNickName + '组织' + activity.activityTitle,
+                description: formatActivityDescription(activity),
                 picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
                 url: pu.viewUrl(qrcode.activityId)
               }]);
@@ -1180,7 +1184,9 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
   if (message.MsgType == 'event' && message.Event == 'SCAN' && message.EventKey) {
     procSubsribeNotify()
   } else if (message.MsgType == 'event' && message.Event == 'subscribe') {
-    eventKey = message.EventKey.split('_')[1]
+    if (eventKey.indexOf('_') > 0) {
+      eventKey = message.EventKey.split('_')[1]
+    }
     procSubsribeNotify()
   } else if (message.MsgType == 'event' && message.Event == 'unsubscribe') {
     mso.delSession(message.FromUserName)
