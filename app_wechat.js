@@ -1105,80 +1105,86 @@ app.use(CONFIG.DIR_FIRST + '/ajInterface', wechat(config, function(req, res, nex
     var ctimeSecond = new Date().getTime() / 1000
     var resp = ''
 
-    mo.findOneDocumentById('qrcodes', eventKey, function(qrcode) {
-      if (qrcode) {
-        mo.findOneDocumentById('activitys', qrcode.activityId, function(activity) {
-          if (activity) {
-            if (activity.enrollPrice == 0 && !activity.enrollAgentSwitch) {
-              var checkActivityEnrollEnableResult = checkActivityEnrollEnable(activity, 1)
-              if (checkActivityEnrollEnableResult == 'ok') {
-                axios.get('https://api.weixin.qq.com/cgi-bin/user/info?access_token=' + globalInfo.token.value + '&openid=' + message.FromUserName + '&lang=zh_CN')
-                  .then(function(response) {
-                    var applyArray = checkEnrolled(response.data.unionid, activity.applys)
-                    if (applyArray.length == 0) {
-                      enrollActivity(activity, initialApply({
-                        openId: response.data.openid,
-                        status: activity.activityConfirmSwitch ? 'wait' : 'pass',
-                        displayNickName: response.data.nickname,
-                        enrollNumber: response.data.sex == 2 ? 0 : 1,
-                        enrollNumberFemale: response.data.sex == 2 ? 1 : 0,
-                        unionId: response.data.unionid,
-                        wechatUserInfo: response.data,
-                        wechatNickName: response.data.nickname,
-                        headimgurl: response.data.headimgurl,
-                        confirmTime: activity.activityConfirmSwitch ? null : new Date(),
-                        enrollPrice: 0,
-                      }), function() {
+    if (eventKey) {
+      mo.findOneDocumentById('qrcodes', eventKey, function(qrcode) {
+        if (qrcode) {
+          mo.findOneDocumentById('activitys', qrcode.activityId, function(activity) {
+            if (activity) {
+              if (activity.enrollPrice == 0 && !activity.enrollAgentSwitch) {
+                var checkActivityEnrollEnableResult = checkActivityEnrollEnable(activity, 1)
+                if (checkActivityEnrollEnableResult == 'ok') {
+                  axios.get('https://api.weixin.qq.com/cgi-bin/user/info?access_token=' + globalInfo.token.value + '&openid=' + message.FromUserName + '&lang=zh_CN')
+                    .then(function(response) {
+                      var applyArray = checkEnrolled(response.data.unionid, activity.applys)
+                      if (applyArray.length == 0) {
+                        enrollActivity(activity, initialApply({
+                          openId: response.data.openid,
+                          status: activity.activityConfirmSwitch ? 'wait' : 'pass',
+                          displayNickName: response.data.nickname,
+                          enrollNumber: response.data.sex == 2 ? 0 : 1,
+                          enrollNumberFemale: response.data.sex == 2 ? 1 : 0,
+                          unionId: response.data.unionid,
+                          wechatUserInfo: response.data,
+                          wechatNickName: response.data.nickname,
+                          headimgurl: response.data.headimgurl,
+                          confirmTime: activity.activityConfirmSwitch ? null : new Date(),
+                          enrollPrice: 0,
+                        }), function() {
+                          res.reply([{
+                            title: '报名成功，点击查看',
+                            description: formatActivityDescription(activity),
+                            picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
+                            url: pu.viewUrl(qrcode.activityId)
+                          }]);
+                        })
+                      } else {
                         res.reply([{
-                          title: '报名成功，点击查看',
+                          title: '您已经报名参加，点击查看',
                           description: formatActivityDescription(activity),
                           picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
                           url: pu.viewUrl(qrcode.activityId)
                         }]);
-                      })
-                    } else {
-                      res.reply([{
-                        title: '您已经报名参加，点击查看',
-                        description: formatActivityDescription(activity),
-                        picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
-                        url: pu.viewUrl(qrcode.activityId)
-                      }]);
-                    }
-                  })
-                  .catch(function(error) {
-                    logger.error('enrollQrcode get qrcode from wechat\n', error)
-                    errorRsp('enrollQrcode get qrcode from wechat by network')
-                  });
+                      }
+                    })
+                    .catch(function(error) {
+                      logger.error('enrollQrcode get qrcode from wechat\n', error)
+                      errorRsp('enrollQrcode get qrcode from wechat by network')
+                    });
+                } else {
+                  res.reply([{
+                    title: activity.activityTitle + ':' + checkActivityEnrollEnableResult + ':查看详情',
+                    description: formatActivityDescription(activity),
+                    picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
+                    url: pu.viewUrl(qrcode.activityId)
+                  }]);
+                }
               } else {
                 res.reply([{
-                  title: activity.activityTitle + ':' + checkActivityEnrollEnableResult + ':查看详情',
+                  title: '点击报名参加' + activity.activityTitle,
                   description: formatActivityDescription(activity),
                   picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
                   url: pu.viewUrl(qrcode.activityId)
                 }]);
+                // resp = '<xml><ToUserName><![CDATA[' + req.body.xml.fromusername + ']]></ToUserName><FromUserName><![CDATA[' + req.body.xml.tousername + ']]></FromUserName><CreateTime>' + ctimeSecond + '</CreateTime><MsgType><![CDATA[news]]></MsgType><ArticleCount>1</ArticleCount><Articles><item><Title><![CDATA[点击报名参加' + activity.activityTitle + ']]></Title><Description><![CDATA[' + activity.founderNickName + '组织]]></Description><PicUrl><![CDATA[https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png]]></PicUrl><Url><![CDATA[https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_view?activity_id=' + qrcode.activityId + ']]></Url></item></Articles></xml>'
               }
             } else {
-              res.reply([{
-                title: '点击报名参加' + activity.activityTitle,
-                description: formatActivityDescription(activity),
-                picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
-                url: pu.viewUrl(qrcode.activityId)
-              }]);
-              // resp = '<xml><ToUserName><![CDATA[' + req.body.xml.fromusername + ']]></ToUserName><FromUserName><![CDATA[' + req.body.xml.tousername + ']]></FromUserName><CreateTime>' + ctimeSecond + '</CreateTime><MsgType><![CDATA[news]]></MsgType><ArticleCount>1</ArticleCount><Articles><item><Title><![CDATA[点击报名参加' + activity.activityTitle + ']]></Title><Description><![CDATA[' + activity.founderNickName + '组织]]></Description><PicUrl><![CDATA[https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png]]></PicUrl><Url><![CDATA[https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_view?activity_id=' + qrcode.activityId + ']]></Url></item></Articles></xml>'
+              logger.error("error:activity is not existed")
+              res.reply("error:activity is not existed")
             }
-          } else {
-            res.reply("error:activity is not existed")
-          }
-        })
-      } else {
-        res.reply([{
-          title: '点击发起活动',
-          description: '发起新活动',
-          picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
-          url: 'https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_edit'
-        }]);
-      }
-    });
+          })
+        } else {
+          logger.error("error:qrcode is not existed")
+          res.reply("error:qrcode is not existed")
+        }
+      });
+    } else {
+      res.reply([{
+        title: '点击发起活动',
+        description: '发起新活动',
+        picurl: 'https://mmbiz.qpic.cn/mmbiz_png/2ibBNpREAiabNUuofkibMQoz8yTZfoXnBxoX9Bh42YvuULGqY1bwiaKXtrSeCtoqNbArXL4ask5lZicFvES0UUhcicWw/0?wx_fmt=png',
+        url: 'https://' + CONFIG.DOMAIN + CONFIG.DIR_FIRST + '/?#/activity_edit'
+      }]);
+    }
   }
   // res.send('<xml><return_code><![CDATA[SUCCESS]]></return_code><return_msg><![CDATA[OK]]></return_msg></xml>');
   if (message.MsgType == 'event' && message.Event == 'SCAN' && message.EventKey) {
