@@ -818,11 +818,42 @@ function enrollActivity(activity, apply, callback) {
   })
 }
 
+function enrollApplyStatistics(activity) {
+  var result = 0
+  for (var apply of activity.applys) {
+    if (apply.status == 'pass') {
+      result += parseInt(apply.enrollNumber + apply.enrollNumberFemale)
+    }
+  }
+  return result
+}
+
 function enrollActivityAjax(req, res) {
   mo.findOneDocumentById('activitys', req.body.activityId, function(activity) {
     if (activity) {
       var fee = 0
       var rsp = { status: 'ok' }
+
+      function checkEnrollAvailable() {
+        if (enrollApplyStatistics(activity) >= activity.numberMax) {
+          return '人数超限'
+        } else if (this.checkOverTime()) {
+          return '活动已过期'
+        } else {
+          return ''
+        }
+      }
+
+      var resultCheckEnrollAvailable = checkEnrollAvailable()
+
+      if (resultCheckEnrollAvailable) {
+        rsp = {
+          status: 'error',
+          msg: resultCheckEnrollAvailable,
+        }
+        res.send(rsp);
+        return
+      }
 
       if (!activity.enrollAgentSwitch) {
         if (req.session.fetchWechatUserInfo.sex == 2) {
