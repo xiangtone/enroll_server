@@ -22,6 +22,8 @@ var pu = require('./lib/privateUtil.js');
 var mo = require('./lib/mongoOperate.js');
 var mso = require('./lib/mongoSessionOperate.js');
 var ts = require('./lib/templateSender.js');
+var fs = require("fs");
+var COS = require('cos-nodejs-sdk-v5');
 var log4js = require('log4js');
 var logger = log4js.getLogger();
 
@@ -719,6 +721,16 @@ function delApply(req, res) {
   });
 }
 
+function checkFounderSessionWithActivityId(activityId, req, success, fail) {
+  mo.findOneDocumentById('activitys', activityId, function(activity) {
+    if (activity.founderUnionId == req.session.fetchWechatUserInfo.unionid) {
+      success(activity)
+    } else {
+      fail()
+    }
+  })
+}
+
 function checkFounderSession(activity, req) {
   if (activity.applyTime) {
     activity.applyTime = new Date(activity.applyTime)
@@ -826,6 +838,181 @@ function enrollApplyStatistics(activity) {
     }
   }
   return result
+}
+
+function picUploadAjax(req, res) {
+  if (!req.body) return res.sendStatus(400)
+
+  checkFounderSessionWithActivityId(req.query.activityId, req, checkFounderSuccess, function() {
+    res.send({
+      status: 'error',
+      data: 'not founder'
+    })
+  })
+
+  function checkFounderSuccess(activity) {
+    //todo check readId
+    var successUploadCount = 0
+    var successUploadBytes = 0
+    var ctime = new Date()
+    for (var i = 0; i < req.body.serverId.length; i++) {
+      downloadWechatPicMedia(req.body.serverId[i]);
+    }
+    var keyNames = []
+    var paramsForCos = {
+      SecretId: CONFIG.QCLOUD_PARA.SecretId,
+      SecretKey: CONFIG.QCLOUD_PARA.SecretKey,
+    }
+    var cos = new COS(paramsForCos);
+
+    function downloadWechatPicMedia(mediaId) {
+      var https = require('https');
+      var url = 'https://api.weixin.qq.com/cgi-bin/media/get?access_token=' + globalInfo.token.value + '&media_id=' + mediaId
+      https.get(url, function(response) {
+        response.setEncoding("binary");
+        var body = '';
+        response.on('data', function(d) {
+          body += d;
+        });
+        response.on('end', function() {
+          var tmpFileName = "./tmp/" + mediaId + ".jpg"
+          fs.writeFile(tmpFileName, body, "binary", function(err) {
+            if (err) {
+              logger.error("write fail", url);
+              return
+            }
+            // logger.debug('paramsForCos', paramsForCos)
+
+            // 分片上传
+            var keyFileNameWithTime = ctime.getFullYear() + '/' + (ctime.getMonth() + 1) + '/' + ctime.getDate() + '/' + req.session.wechatBase.openid + '-' + mediaId + '.jpg'
+            var paramsForUpload = {
+              Bucket: CONFIG.QCLOUD_PARA.COS.Bucket,
+              Region: CONFIG.QCLOUD_PARA.COS.Region,
+              Key: keyFileNameWithTime,
+              FilePath: tmpFileName
+            }
+            cos.sliceUploadFile(paramsForUpload, function(err, data) {
+              if (err) {
+                logger.error('cos.sliceUploadFile', arguments);
+              } else {
+                //delete tmp file
+                fs.unlink(tmpFileName, (err) => {
+                  if (err) {
+                    logger.error('fs.unlink', err);
+                  }
+                  successUploadCount++
+                  successUploadBytes += body.length
+                  keyNames.push(keyFileNameWithTime)
+                  if (successUploadCount == req.body.serverId.length) {
+                    processCmd()
+                  }
+                });
+              }
+            });
+            // var paramsForUpload = {
+            //  Bucket: CONFIG.QCLOUD_PARA.COS.Bucket,
+            //  Region: CONFIG.QCLOUD_PARA.COS.Region,
+            //  Key: keyFileNameWithTime,
+            //  // FilePath: tmpFileName,
+            //  // Body: fs.readFileSync(tmpFileName),
+            //  Body: fs.createReadStream(tmpFileName),
+            //  ContentLength: fs.statSync(tmpFileName).size
+            // }
+            // cos.putObject(paramsForUpload, function(err, data) {
+            //  logger.debug(arguments)
+            //  if (err) {
+            //    logger.error('cos.sliceUploadFile', arguments);
+            //  } else {
+            //    //delete tmp file
+            //    fs.unlink(tmpFileName, (err) => {
+            //      if (err) {
+            //        logger.error('fs.unlink', err);
+            //      }
+            //      successUploadCount++
+            //      successUploadBytes += body.length
+            //      keyNames.push(keyFileNameWithTime)
+            //      if (successUploadCount == req.body.serverId.length) {
+            //        processCmd()
+            //      }
+            //    });
+            //  }
+            // });
+          });
+        });
+      });
+    };
+
+    function processCover() {
+      function updateCover() {
+        mo.updateOne('activitys', { _id: activity._id }, {
+          $set: {
+            cover: keyNames[0],
+          }
+        }, function(result) {
+          if (result.result.ok == 1) {
+            successGlobalRsp(res)
+            // logger.debug('updateCover done')
+            // res.send({ status: 'ok' })
+          } else {
+            errorGlobalRsp('activity cover update mongodb error', res)
+          }
+        })
+      }
+
+      function deleletOldCover() {
+        var params = {
+          Bucket: CONFIG.QCLOUD_PARA.COS.Bucket,
+          Region: CONFIG.QCLOUD_PARA.COS.Region,
+          Key: activity.cover
+        };
+
+        cos.deleteObject(params, function(err, data) {
+          if (err) {
+            logger.error('deleletOldCover', err);
+          } else {
+            updateCover()
+          }
+        });
+      }
+
+      function procExistedCover() {
+        var findTarget = {
+          collection: 'activitys',
+          condition: {
+            'cover': activity.cover,
+          }
+        }
+        mo.findDocuments(findTarget, function(docs) {
+          if (docs.length > 1) {
+            updateCover()
+          } else {
+            deleletOldCover()
+          }
+        })
+      }
+      if (activity.cover) {
+        procExistedCover()
+      } else {
+        updateCover()
+      }
+    }
+
+    function processCmd() {
+      switch (req.query.act) {
+        case "cover":
+          processCover();
+          break;
+        case "note":
+          // insertNote();
+          break;
+        default:
+          // ...
+      }
+    }
+  }
+
+
+
 }
 
 function enrollActivityAjax(req, res) {
@@ -960,6 +1147,18 @@ function enrollActivityAjax(req, res) {
       res.send({ status: 'error', msg: 'activity can not find' });
     }
   });
+}
+
+function errorGlobalRsp(msg, res) {
+  var rsp = {
+    status: 'error',
+    msg: msg
+  }
+  res.send(rsp)
+}
+
+function successGlobalRsp(res) {
+  res.send({ status: 'ok' });
 }
 
 function enrollQrcode(req, res) {
@@ -1396,6 +1595,7 @@ app.get(CONFIG.DIR_FIRST + '/ajax/getActivityFoundList', getActivityFoundList);
 app.get(CONFIG.DIR_FIRST + '/ajax/getActivityApplyList', getActivityApplyList);
 app.get(CONFIG.DIR_FIRST + '/ajwechatLogin', wechatLogin);
 app.post(CONFIG.DIR_FIRST + '/ajax/enrollActivity', jsonParser, enrollActivityAjax);
+app.post(CONFIG.DIR_FIRST + '/ajax/picUploadAjax', jsonParser, picUploadAjax);
 app.post(CONFIG.DIR_FIRST + '/ajax/enrollQrcode', jsonParser, enrollQrcode);
 // app.post(CONFIG.DIR_FIRST + '/ajax/createActivity', jsonParser, check.params(bodyRuleCreateActivity), createActivity);
 app.post(CONFIG.DIR_FIRST + '/ajax/createActivity', jsonParser, createActivity);
