@@ -1031,6 +1031,14 @@ function cleanEmoji(ori) {
 }
 
 function enrollActivityAjax(req, res) {
+  req.body.enrollNumber = parseInt(req.body.enrollNumber)
+  req.body.enrollNumberFemale = parseInt(req.body.enrollNumberFemale)
+  if (isNaN(req.body.enrollNumberFemale)) {
+    req.body.enrollNumberFemale = 0
+  }
+  if (isNaN(req.body.enrollNumber)) {
+    req.body.enrollNumber = 0
+  }
   mo.findOneDocumentById('activitys', req.body.activityId, function(activity) {
     if (activity) {
       var fee = 0
