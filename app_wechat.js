@@ -163,7 +163,6 @@ app.use(function(req, res, next) {
       if (req.query.code && req.query.state) {
         isNext = false
         oAuthBaseProcess(req.query.code)
-
       } else {
         if (req.url.indexOf('apply') != -1 && !req.session.wechatUserInfo) {
           toWechatOauth('snsapi_userinfo')
@@ -334,8 +333,9 @@ app.use(function(req, res, next) {
   function redirectAfterOAuthSuccess() {
     mo.findOneDocumentById('logHrefs', req.query.state, function(docHref) {
       if (docHref) {
-        res.redirect(docHref.href)
-        // res.send('<script>location="' + docHref.href + '"</script>')
+        //don't use redirect 302 , cellphone brower perhaps don't work
+        // res.redirect(docHref.href)
+        res.send('<script>location="' + docHref.href + '"</script>')
       } else {
         res.send('error on get href from logs')
       }
@@ -840,6 +840,15 @@ function enrollApplyStatistics(activity) {
   return result
 }
 
+function checkOverTime(activity) {
+  var activityBeginDate = new Date(activity.activityDateTime)
+  if (activityBeginDate.getTime() + 1000 * 3600 * activity.spendHours < Date.now()) {
+    return true
+  } else {
+    return false
+  }
+}
+
 function picUploadAjax(req, res) {
   if (!req.body) return res.sendStatus(400)
 
@@ -1010,9 +1019,15 @@ function picUploadAjax(req, res) {
       }
     }
   }
+}
 
-
-
+function cleanEmoji(ori) {
+  var regStr = /[\uD83C|\uD83D|\uD83E][\uDC00-\uDFFF][\u200D|\uFE0F]|[\uD83C|\uD83D|\uD83E][\uDC00-\uDFFF]|[0-9|*|#]\uFE0F\u20E3|[0-9|#]\u20E3|[\u203C-\u3299]\uFE0F\u200D|[\u203C-\u3299]\uFE0F|[\u2122-\u2B55]|\u303D|[\A9|\AE]\u3030|\uA9|\uAE|\u3030/ig;
+  if (regStr.test(ori)) {
+    return ori.replace(regStr, "")
+  } else {
+    return ori
+  }
 }
 
 function enrollActivityAjax(req, res) {
@@ -1024,7 +1039,7 @@ function enrollActivityAjax(req, res) {
       function checkEnrollAvailable() {
         if (enrollApplyStatistics(activity) >= activity.numberMax) {
           return '人数超限'
-        } else if (this.checkOverTime()) {
+        } else if (checkOverTime(activity)) {
           return '活动已过期'
         } else {
           return ''
@@ -1075,7 +1090,7 @@ function enrollActivityAjax(req, res) {
           try {
             let unifiedOrder = await weixin_pay_api.unifiedOrder({
               out_trade_no: insertedUnifiedOrder.ops[0]._id.toString(),
-              body: '参加' + activity.founderNickName + '组织的' + activity.activityTitle + '的费用',
+              body: cleanEmoji('参加' + activity.founderNickName + '组织的' + activity.activityTitle + '的费用'),
               total_fee: 100 * fee,
               openid: req.session.fetchWechatUserInfo.openid,
               // notify_url: 'https://' + CONFIG.DOMAIN + '/' + CONFIG.PAY_DIR_FIRST + insertedUnifiedOrder.ops[0]._id.toString(),
