@@ -420,6 +420,15 @@ async function qrPayImg(req, res) {
   }
 }
 
+function qrPayImgResult(req, res) {
+  if (lastTotalFee != '') {
+    res.send(lastTotalFee + '|0')
+    lastTotalFee = ''
+  } else {
+    res.send('none')
+  }
+}
+
 function getSession(req, res) {
   res.send("ok");
 }
@@ -1574,9 +1583,11 @@ app.post(CONFIG.PAY_DIR_FIRST + 'qr', weixin_pay_api.middlewareForExpress('nativ
 // app.post(CONFIG.PAY_DIR_FIRST + 'qr', (req, res) => {
 //   logger.debug('req.body qr', req.body)
 // })
+var lastTotalFee = ''
 app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req, res) => {
   let info = req.weixin;
   logger.debug('weixin_pay_api.middlewareForExpress', info)
+  lastTotalFee = info.total_fee
   mo.findOneDocumentById('unifiedOrders', info.out_trade_no, function(unifiedOrder) {
     if (unifiedOrder && unifiedOrder.payProcess && unifiedOrder.payProcess == 'wait') {
       mo.findOneDocumentById('activitys', unifiedOrder.activityId, function(activity) {
@@ -1708,6 +1719,7 @@ app.post(CONFIG.DIR_FIRST + '/ajax/delActivity', jsonParser, delActivity);
 app.post(CONFIG.DIR_FIRST + '/ajhrefRecord', jsonParser, hrefRecord);
 app.get(CONFIG.DIR_FIRST + '/ajhrefRedirect', hrefRedirect);
 app.get(CONFIG.DIR_FIRST + '/ajQrPayImg', qrPayImg);
+app.get(CONFIG.DIR_FIRST + '/ajQrPayImgResult', qrPayImgResult);
 app.post(CONFIG.DIR_FIRST + '/ajax/cancelEnrollByCustomer', jsonParser, cancelEnrollByCustomer);
 // app.post(CONFIG.DIR_FIRST + '/ajInterface', xmlparser({
 //   trim: false,
