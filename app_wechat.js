@@ -104,13 +104,13 @@ function scanPayToFounder() {
   }
   mo.findDocuments(findTarget, function(docs) {
     docs.forEach(function(activity) {
-      var amount = 0
-      var count = 0
-      var updateData = []
+      let amount = 0
+      let count = 0
+      let updateData = []
       for (var j = 1; j < activity.applys.length; j++) {
         var apply = activity.applys[j]
         if (apply.status == 'pass' && apply.payToFounderStatus == 'wait' && apply.payToFounderSchedule < currentTime) {
-          var fee = 100 * apply.enrollPrice * apply.enrollNumber * (1 - globalInfo.config.payRatio)
+          var fee = 100 * (apply.enrollPrice * apply.enrollNumber + apply.enrollPriceFemale * apply.enrollNumberFemale) * (1 - globalInfo.config.payRatio)
           amount += fee
           count++
           updateData.push({ index: j, fee: fee })
@@ -1588,6 +1588,12 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
   let info = req.weixin;
   logger.debug('weixin_pay_api.middlewareForExpress', info)
   lastTotalFee = info.total_fee
+  // 回复成功消息
+  res.reply();
+  req.session.destroy(null)
+  if (info.out_trade_no.length != 24) {
+    return;
+  }
   mo.findOneDocumentById('unifiedOrders', info.out_trade_no, function(unifiedOrder) {
     if (unifiedOrder && unifiedOrder.payProcess && unifiedOrder.payProcess == 'wait') {
       mo.findOneDocumentById('activitys', unifiedOrder.activityId, function(activity) {
@@ -1695,9 +1701,6 @@ app.post(CONFIG.PAY_DIR_FIRST, weixin_pay_api.middlewareForExpress('pay'), (req,
   });
   // 业务逻辑...
 
-  // 回复成功消息
-  res.reply();
-  req.session.destroy(null)
   // 回复错误消息
   // res.reply('错误信息');
 });
